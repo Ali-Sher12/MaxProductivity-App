@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Max Productivity</string>
+    <string name="accessibility_service_description">Detects distracting apps and YouTube Shorts to help you stay focused.</string>
+    <string name="timer_notification_title">Focus mode active</string>
+    <string name="timer_notification_text">Tracking YouTube usage</string>
+    <string name="return_home">Return Home</string>
+    <string name="block_overlay_default_message">Stay focused. This app is blocked.</string>
+    <string name="youtube_limit_reached">Daily YouTube limit reached</string>
+    <string name="shorts_blocked_message">YouTube Shorts are blocked</string>
+</resources>
