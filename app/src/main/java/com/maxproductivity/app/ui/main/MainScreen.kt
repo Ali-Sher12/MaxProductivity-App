@@ -77,7 +77,7 @@ fun MainScreen(
     val isYoutubeLimitLocked = uiState.preferences.timerLastModifiedDates["com.google.android.youtube"] == today
 
     val imagePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent(),
+        contract = ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
         uri?.let { onBackgroundImageChange(it.toString()) }
     }
@@ -235,7 +235,7 @@ fun MainScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(modifier = Modifier.height(8.dp))
-            TextButton(onClick = { imagePicker.launch("image/*") }) {
+            TextButton(onClick = { imagePicker.launch(arrayOf("image/*")) }) {
                 Text(
                     if (uiState.preferences.backgroundImageUri.isBlank()) {
                         "Pick background image"

@@ -16,7 +16,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -47,7 +46,7 @@ class YouTubeTimerService : Service() {
                 val today = LocalDate.now().toString()
 
                 val dbUsage = prefs.youtubeUsageSeconds
-                if (accumulatedSeconds == -1L || prefs.youtubeUsageDate != today || dbUsage == 0L) {
+                if (accumulatedSeconds == -1L || prefs.youtubeUsageDate != today) {
                     accumulatedSeconds = dbUsage
                 } else {
                     accumulatedSeconds = maxOf(accumulatedSeconds, dbUsage)
@@ -60,7 +59,7 @@ class YouTubeTimerService : Service() {
                 } else {
                     prefs.appUsageSeconds.forEach { (pkg, secs) ->
                         val localSecs = localAppUsage[pkg]
-                        if (localSecs == null || secs == 0L) {
+                        if (localSecs == null) {
                             localAppUsage[pkg] = secs
                         } else {
                             localAppUsage[pkg] = maxOf(localSecs, secs)
@@ -96,7 +95,6 @@ class YouTubeTimerService : Service() {
                 delay(TICK_INTERVAL_MS)
                 val today = LocalDate.now().toString()
 
-                // Reset daily stats on date change
                 if (preferences.youtubeUsageDate != today || preferences.appUsageDate != today) {
                     accumulatedSeconds = 0L
                     localAppUsage.clear()
@@ -104,23 +102,27 @@ class YouTubeTimerService : Service() {
                     repository.resetDailyUsageIfNeeded(today)
                 }
 
-                val fgPackage = YouTubeTrackingState.foregroundPackage
+                if (!FocusAccessibilityService.isRunning()) continue
+
+                val state = YouTubeTrackingState.snapshot()
+                val fgPackage = state.foregroundPackage
 
                 if (
-                    YouTubeTrackingState.isYouTubeForeground &&
+                    state.isYouTubeForeground &&
                     fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE &&
-                    !YouTubeTrackingState.isShortsActive &&
-                    !YouTubeTrackingState.isYouTubeLimitReached
+                    !state.isShortsActive &&
+                    !state.isYouTubeLimitReached
                 ) {
                     accumulatedSeconds += 1
                     repository.updateYoutubeUsage(accumulatedSeconds, today)
 
                     if (hasReachedLimit(preferences, accumulatedSeconds)) {
                         YouTubeTrackingState.isYouTubeLimitReached = true
+                        sendUserHome()
                         startActivity(
                             BlockOverlayActivity.createIntent(
                                 this@YouTubeTimerService,
-                                getString(R.string.youtube_limit_reached),
+                                preferences.reminderText,
                                 AppPreferencesRepository.YOUTUBE_PACKAGE,
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
@@ -135,10 +137,11 @@ class YouTubeTimerService : Service() {
                             repository.updateAppUsage(fgPackage, newUsage, today)
 
                             if (newUsage >= limitMinutes * 60L) {
+                                sendUserHome()
                                 startActivity(
                                     BlockOverlayActivity.createIntent(
                                         this@YouTubeTimerService,
-                                        getString(R.string.block_overlay_default_message),
+                                        preferences.reminderText,
                                         fgPackage,
                                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                 )
@@ -148,6 +151,14 @@ class YouTubeTimerService : Service() {
                 }
             }
         }
+    }
+
+    private fun sendUserHome() {
+        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        startActivity(homeIntent)
     }
 
     private fun hasReachedLimit(prefs: AppPreferences, seconds: Long): Boolean {

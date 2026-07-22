@@ -4,9 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,29 +37,45 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.ui.theme.MaxProductivityTheme
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 
 class BlockOverlayActivity : ComponentActivity() {
+
+    // This Activity is declared launchMode="singleInstance" in the manifest so it can render
+    // above everything, including other tasks. That means when a second block event fires while
+    // an earlier instance is still alive in the background (e.g. the user pressed the physical
+    // Home button instead of tapping our "Return Home" button, so finish() was never called),
+    // Android reuses the existing instance and calls onNewIntent() instead of onCreate(). Without
+    // this override, the Compose content already drawn from the *previous* block event just sits
+    // there — this is what caused the reminder message/image to sometimes look "stuck" or blank,
+    // and made tap-to-close feel unreliable, since the visible screen wasn't actually the one
+    // reacting to the latest intent/preferences. recreate() forces a real onCreate() every time,
+    // so the screen is always built fresh from the current message, image, and click handlers.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        recreate()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val message = intent.getStringExtra(EXTRA_MESSAGE)
-            ?: getString(R.string.block_overlay_default_message)
-        val backgroundUri = runBlocking {
-            MaxProductivityApp.get(this@BlockOverlayActivity)
-                .preferencesRepository
-                .preferencesFlow
-                .first()
-                .backgroundImageUri
-        }.ifBlank {
-            intent.getStringExtra(EXTRA_BACKGROUND_URI).orEmpty()
-        }
+        val intentMessage = intent.getStringExtra(EXTRA_MESSAGE)?.takeIf { it.isNotBlank() }
+        val intentBackgroundUri = intent.getStringExtra(EXTRA_BACKGROUND_URI).orEmpty()
 
         setContent {
+            val preferences by MaxProductivityApp.get(this@BlockOverlayActivity)
+                .preferencesRepository
+                .preferencesFlow
+                .collectAsStateWithLifecycle(initialValue = AppPreferences())
+
+            val message = preferences.reminderText.ifBlank {
+                intentMessage ?: getString(R.string.block_overlay_default_message)
+            }
+            val backgroundUri = preferences.backgroundImageUri.ifBlank { intentBackgroundUri }
+
             MaxProductivityTheme {
                 BlockOverlayScreen(
                     message = message,
@@ -100,7 +120,17 @@ private fun BlockOverlayScreen(
     backgroundImageUri: String,
     onReturnHome: () -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    BackHandler(onBack = onReturnHome)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onReturnHome,
+            ),
+    ) {
         if (backgroundImageUri.isNotBlank()) {
             AsyncImage(
                 model = backgroundImageUri,

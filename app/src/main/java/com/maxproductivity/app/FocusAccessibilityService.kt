@@ -27,6 +27,9 @@ class FocusAccessibilityService : AccessibilityService() {
     @Volatile
     private var preferences: AppPreferences = AppPreferences()
 
+    @Volatile
+    private var lastShortsDetected: Boolean = false
+
     override fun onCreate() {
         super.onCreate()
         repository = MaxProductivityApp.get(this).preferencesRepository
@@ -47,22 +50,80 @@ class FocusAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || !preferences.blockingEnabled) return
-
+        if (event == null) return
         val packageName = event.packageName?.toString() ?: return
-        YouTubeTrackingState.foregroundPackage = packageName
+
+        // IMPORTANT: only TYPE_WINDOW_STATE_CHANGED reliably means "the foreground app switched".
+        // TYPE_WINDOW_CONTENT_CHANGED can be dispatched by windows that are NOT in the foreground
+        // (status bar clock ticks, notification icon updates, IME, other background windows
+        // redrawing) even while YouTube is still the actual foreground app. Previously we treated
+        // every event the same way, so any unrelated content-changed event from another package
+        // would call clearYouTubeForeground() mid-session and silently drop timer ticks until the
+        // next YouTube window-state event arrived. That's why usage was undercounted, and only
+        // intermittently, depending on how much unrelated system/background activity happened to
+        // fire during a session.
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowStateChanged(packageName)
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> handleWindowContentChanged(packageName)
+        }
+    }
+
+    private fun handleWindowStateChanged(packageName: String) {
+        YouTubeTrackingState.updateForeground(packageName)
+
+        if (packageName == AppPreferencesRepository.YOUTUBE_PACKAGE) {
+            updateYouTubeTrackingState()
+            if (preferences.blockingEnabled) {
+                handleYouTubeBlocking()
+            }
+            return
+        }
+
+        YouTubeTrackingState.clearYouTubeForeground()
+        lastShortsDetected = false
+
+        if (!preferences.blockingEnabled) return
 
         when {
-            packageName == AppPreferencesRepository.YOUTUBE_PACKAGE -> handleYouTube(event)
             ALWAYS_BLOCKED_PACKAGES.contains(packageName) -> blockApp(packageName, preferences.reminderText)
             preferences.blockedPackages.contains(packageName) -> blockApp(packageName, preferences.reminderText)
             checkAppTimerLimit(packageName) -> { /* Handled in checkAppTimerLimit */ }
-            else -> {
-                if (YouTubeTrackingState.isYouTubeForeground) {
-                    YouTubeTrackingState.isYouTubeForeground = false
-                    YouTubeTrackingState.isShortsActive = false
-                }
-            }
+        }
+    }
+
+    private fun handleWindowContentChanged(packageName: String) {
+        // Only act on content-changed events that originate from YouTube AND while YouTube is
+        // already known (from the last window-state-changed event) to be the foreground app.
+        // This is what lets us re-run Shorts detection as the user scrolls within YouTube
+        // (switching between the Shorts feed and a normal video without a window-state change),
+        // without letting unrelated background windows disturb the foreground tracking state.
+        if (packageName != AppPreferencesRepository.YOUTUBE_PACKAGE) return
+        if (YouTubeTrackingState.foregroundPackage != AppPreferencesRepository.YOUTUBE_PACKAGE) return
+
+        updateYouTubeTrackingState()
+        if (preferences.blockingEnabled) {
+            handleYouTubeBlocking()
+        }
+    }
+
+    private fun updateYouTubeTrackingState() {
+        val root = rootInActiveWindow
+        val shortsDetected = ShortsDetector.isShortsScreen(root)
+        root?.recycle()
+
+        lastShortsDetected = shortsDetected
+        YouTubeTrackingState.setYouTubeTracking(foreground = true, shortsActive = shortsDetected)
+    }
+
+    private fun handleYouTubeBlocking() {
+        if (YouTubeTrackingState.isYouTubeLimitReached) {
+            blockYouTube(preferences.reminderText)
+            return
+        }
+
+        if (lastShortsDetected) {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            blockYouTube(preferences.reminderText)
         }
     }
 
@@ -70,30 +131,10 @@ class FocusAccessibilityService : AccessibilityService() {
         val limitMinutes = preferences.timerLimits[packageName] ?: return false
         val usageSeconds = preferences.appUsageSeconds[packageName] ?: 0L
         if (usageSeconds >= limitMinutes * 60L) {
-            blockApp(packageName, getString(R.string.block_overlay_default_message))
+            blockApp(packageName, preferences.reminderText)
             return true
         }
         return false
-    }
-
-    private fun handleYouTube(event: AccessibilityEvent) {
-        YouTubeTrackingState.isYouTubeForeground = true
-
-        if (YouTubeTrackingState.isYouTubeLimitReached) {
-            blockYouTube(getString(R.string.youtube_limit_reached))
-            return
-        }
-
-        val root = rootInActiveWindow
-        val shortsDetected = ShortsDetector.isShortsScreen(root)
-        root?.recycle()
-
-        YouTubeTrackingState.isShortsActive = shortsDetected
-
-        if (shortsDetected) {
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            blockYouTube(getString(R.string.shorts_blocked_message))
-        }
     }
 
     private fun blockApp(packageName: String, message: String) {
@@ -113,7 +154,6 @@ class FocusAccessibilityService : AccessibilityService() {
         suspensionManager.setStrategy(strategy)
 
         if (prefs.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
-            // Combine manual blocked packages with ALWAYS_BLOCKED_PACKAGES
             val allBlocked = prefs.blockedPackages + ALWAYS_BLOCKED_PACKAGES
             suspensionManager.updateSuspendedPackages(this, allBlocked, suspend = true)
         } else {
@@ -131,6 +171,7 @@ class FocusAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        YouTubeTrackingState.reset()
         serviceScope.cancel()
         super.onDestroy()
     }

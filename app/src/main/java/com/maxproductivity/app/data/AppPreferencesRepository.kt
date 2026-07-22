@@ -18,11 +18,11 @@ import java.time.LocalDate
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
 
 val ALWAYS_BLOCKED_PACKAGES = setOf(
-    "com.snapchat.android",
     "com.instagram.android",
     "com.zhiliaoapp.musically",
     "com.reddit.frontpage",
-    "com.discord",
+    "com.snapchat.android",
+    "com.twitter.android",
 )
 
 data class AppPreferences(

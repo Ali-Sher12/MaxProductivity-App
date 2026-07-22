@@ -17,15 +17,16 @@ import kotlinx.coroutines.launch
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.content.Context
 
 val fallbackLabels = mapOf(
-    "com.snapchat.android" to "Snapchat",
     "com.instagram.android" to "Instagram",
     "com.zhiliaoapp.musically" to "TikTok",
     "com.reddit.frontpage" to "Reddit",
-    "com.discord" to "Discord"
+    "com.snapchat.android" to "Snapchat",
+    "com.twitter.android" to "Twitter",
 )
 
 data class BlockableApp(
@@ -174,7 +175,18 @@ class MainViewModel(
     }
 
     fun setBackgroundImageUri(uri: String) {
-        viewModelScope.launch { repository.setBackgroundImageUri(uri) }
+        viewModelScope.launch {
+            val parsedUri = Uri.parse(uri)
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    parsedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (_: SecurityException) {
+                // OpenDocument URIs should support this; ignore if unavailable.
+            }
+            repository.setBackgroundImageUri(uri)
+        }
     }
 
     fun setBlockingStrategy(strategy: BlockingStrategy) {
