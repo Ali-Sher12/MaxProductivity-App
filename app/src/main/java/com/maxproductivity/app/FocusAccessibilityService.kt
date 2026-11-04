@@ -9,8 +9,7 @@ import com.maxproductivity.app.blocking.AppSuspensionManager
 import com.maxproductivity.app.blocking.BlockingStrategy
 import com.maxproductivity.app.blocking.DeviceOwnerSuspendStrategy
 import com.maxproductivity.app.data.ALWAYS_BLOCKED_PACKAGES
-import com.maxproductivity.app.data.LIMITED_SOCIAL_PACKAGES
-import com.maxproductivity.app.data.LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
+import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_PACKAGES
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
@@ -25,12 +24,16 @@ class FocusAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var repository: AppPreferencesRepository
     private lateinit var suspensionManager: AppSuspensionManager
+    private val deviceOwnerStrategy = DeviceOwnerSuspendStrategy()
 
     @Volatile
     private var preferences: AppPreferences = AppPreferences()
 
     @Volatile
     private var lastShortsDetected: Boolean = false
+
+    @Volatile
+    private var lastSuspendedPackages: Set<String> = emptySet()
 
     override fun onCreate() {
         super.onCreate()
@@ -75,9 +78,15 @@ class FocusAccessibilityService : AccessibilityService() {
 
         if (packageName == AppPreferencesRepository.YOUTUBE_PACKAGE) {
             updateYouTubeTrackingState()
-            if (preferences.blockingEnabled) {
-                handleYouTubeBlocking()
+
+            // YouTube Shorts can NEVER be unblocked. They always remain blocked even if blockingEnabled is false.
+            if (lastShortsDetected) {
+                blockShorts()
+                return
             }
+
+            if (!preferences.blockingEnabled) return
+            handleYouTubeBlocking()
             return
         }
 
@@ -89,6 +98,10 @@ class FocusAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (YouTubeTrackingState.isNoticeActive || YouTubeTrackingState.isBlockOverlayActive) {
+            return
+        }
+
         // Switching to a different app clears the previously acknowledged session
         if (packageName != acknowledgedPackageSession) {
             acknowledgedPackageSession = null
@@ -96,18 +109,23 @@ class FocusAccessibilityService : AccessibilityService() {
 
         if (!preferences.blockingEnabled) return
 
-        // Limited social media apps (Instagram, TikTok, Twitter/X, Reddit, Snapchat)
-        if (LIMITED_SOCIAL_PACKAGES.contains(packageName)) {
-            val usageSeconds = preferences.appUsageSeconds[packageName] ?: 0L
-            val limitMinutes = preferences.getEffectiveLimitMinutes(packageName) ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
-            val limitSeconds = limitMinutes * 60L
-            if (usageSeconds >= limitSeconds) {
-                blockApp(packageName, "Daily limit reached for this app (${limitMinutes}m).")
+        // Apps with an active timer (Extremely Distracting apps or user-configured timed apps)
+        if (preferences.hasActiveTimer(packageName)) {
+            val limitMinutes = preferences.getEffectiveLimitMinutes(packageName) ?: 15
+            if (preferences.isTimerExpired(packageName)) {
+                val message = if (preferences.isExtremelyDistracting(packageName)) {
+                    preferences.extremelyDistractingLimitMessage
+                } else {
+                    preferences.timerLimitMessage
+                }
+                blockApp(packageName, message)
                 return
             }
 
             if (acknowledgedPackageSession != packageName) {
-                val remainingSeconds = maxOf(1L, limitSeconds - usageSeconds)
+                acknowledgedPackageSession = packageName
+                val displayedUsedSeconds = preferences.getDisplayedUsageSeconds(packageName)
+                val remainingSeconds = maxOf(1L, limitMinutes * 60L - displayedUsedSeconds)
                 startActivity(TimeNoticeActivity.createIntent(this, packageName, remainingSeconds, limitMinutes))
                 return
             }
@@ -117,20 +135,23 @@ class FocusAccessibilityService : AccessibilityService() {
         when {
             ALWAYS_BLOCKED_PACKAGES.contains(packageName) -> blockApp(packageName, preferences.reminderText)
             preferences.blockedPackages.contains(packageName) -> blockApp(packageName, preferences.reminderText)
-            checkAppTimerLimit(packageName) -> { /* Handled in checkAppTimerLimit */ }
         }
     }
 
     private fun handleWindowContentChanged(packageName: String) {
         // Only act on content-changed events that originate from YouTube AND while YouTube is
         // already known (from the last window-state-changed event) to be the foreground app.
-        // This is what lets us re-run Shorts detection as the user scrolls within YouTube
-        // (switching between the Shorts feed and a normal video without a window-state change),
-        // without letting unrelated background windows disturb the foreground tracking state.
         if (packageName != AppPreferencesRepository.YOUTUBE_PACKAGE) return
         if (YouTubeTrackingState.foregroundPackage != AppPreferencesRepository.YOUTUBE_PACKAGE) return
 
         updateYouTubeTrackingState()
+
+        // YouTube Shorts can NEVER be unblocked.
+        if (lastShortsDetected) {
+            blockShorts()
+            return
+        }
+
         if (preferences.blockingEnabled) {
             handleYouTubeBlocking()
         }
@@ -139,56 +160,126 @@ class FocusAccessibilityService : AccessibilityService() {
     private fun updateYouTubeTrackingState() {
         val root = rootInActiveWindow
         val shortsDetected = ShortsDetector.isShortsScreen(root)
+        @Suppress("DEPRECATION")
         root?.recycle()
 
         lastShortsDetected = shortsDetected
         YouTubeTrackingState.setYouTubeTracking(foreground = true, shortsActive = shortsDetected)
     }
 
+    private fun blockShorts() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        startActivity(
+            BlockOverlayActivity.createIntent(
+                this,
+                getString(R.string.shorts_blocked_message),
+                AppPreferencesRepository.YOUTUBE_PACKAGE,
+                preferences.backgroundImageUri,
+            ),
+        )
+    }
+
     private fun handleYouTubeBlocking() {
-        if (YouTubeTrackingState.isYouTubeLimitReached) {
-            blockYouTube(getString(R.string.youtube_limit_reached))
+        // Explicitly blocked YouTube is blocked immediately, regardless of timers.
+        if (preferences.blockedPackages.contains(AppPreferencesRepository.YOUTUBE_PACKAGE)) {
+            blockYouTube(preferences.reminderText)
             return
         }
 
-        if (lastShortsDetected) {
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            blockYouTube(getString(R.string.shorts_blocked_message))
+        // A timed YouTube app is blocked once its daily limit has been consumed.
+        if (preferences.isTimerExpired(AppPreferencesRepository.YOUTUBE_PACKAGE) || YouTubeTrackingState.isYouTubeLimitReached) {
+            blockYouTube(preferences.timerLimitMessage)
+            return
         }
-    }
 
-    private fun checkAppTimerLimit(packageName: String): Boolean {
-        val limitMinutes = preferences.timerLimits[packageName] ?: return false
-        val usageSeconds = preferences.appUsageSeconds[packageName] ?: 0L
-        if (usageSeconds >= limitMinutes * 60L) {
-            blockApp(packageName, preferences.reminderText)
-            return true
+        if (preferences.hasActiveTimer(AppPreferencesRepository.YOUTUBE_PACKAGE) &&
+            acknowledgedPackageSession != AppPreferencesRepository.YOUTUBE_PACKAGE
+        ) {
+            acknowledgedPackageSession = AppPreferencesRepository.YOUTUBE_PACKAGE
+            val limitMinutes = preferences.getEffectiveLimitMinutes(AppPreferencesRepository.YOUTUBE_PACKAGE) ?: 15
+            val displayedUsedSeconds = preferences.getDisplayedUsageSeconds(AppPreferencesRepository.YOUTUBE_PACKAGE)
+            val remainingSeconds = maxOf(1L, limitMinutes * 60L - displayedUsedSeconds)
+            startActivity(TimeNoticeActivity.createIntent(this, AppPreferencesRepository.YOUTUBE_PACKAGE, remainingSeconds, limitMinutes))
+            return
         }
-        return false
     }
 
     private fun blockApp(packageName: String, message: String) {
-        if (preferences.blockingStrategy == BlockingStrategy.DEVICE_OWNER) return
-        suspensionManager.blockPackage(this, packageName, message)
+        if (preferences.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
+            suspendForDeviceOwner(packageName)
+            startActivity(
+                BlockOverlayActivity.createIntent(
+                    this,
+                    message,
+                    packageName,
+                    preferences.backgroundImageUri,
+                ),
+            )
+            return
+        }
+        suspensionManager.blockPackage(this, packageName, message, preferences.backgroundImageUri)
     }
 
     private fun blockYouTube(message: String) {
-        suspensionManager.blockPackage(this, AppPreferencesRepository.YOUTUBE_PACKAGE, message)
+        if (preferences.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
+            suspendForDeviceOwner(AppPreferencesRepository.YOUTUBE_PACKAGE)
+            startActivity(
+                BlockOverlayActivity.createIntent(
+                    this,
+                    message,
+                    AppPreferencesRepository.YOUTUBE_PACKAGE,
+                    preferences.backgroundImageUri,
+                ),
+            )
+            return
+        }
+        suspensionManager.blockPackage(
+            this,
+            AppPreferencesRepository.YOUTUBE_PACKAGE,
+            message,
+            preferences.backgroundImageUri,
+        )
     }
 
+    @Synchronized
+    private fun suspendForDeviceOwner(packageName: String) {
+        if (lastSuspendedPackages.contains(packageName)) return
+        deviceOwnerStrategy.updateSuspendedPackages(this, setOf(packageName), suspend = true)
+        lastSuspendedPackages = lastSuspendedPackages + packageName
+    }
+
+    @Synchronized
     private fun updateBlockingStrategy(prefs: AppPreferences) {
         val strategy = when (prefs.blockingStrategy) {
             BlockingStrategy.ACCESSIBILITY -> AccessibilityBlockStrategy.fromService(this)
-            BlockingStrategy.DEVICE_OWNER -> DeviceOwnerSuspendStrategy()
+            BlockingStrategy.DEVICE_OWNER -> deviceOwnerStrategy
         }
         suspensionManager.setStrategy(strategy)
 
-        if (prefs.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
-            val allBlocked = prefs.blockedPackages + ALWAYS_BLOCKED_PACKAGES
-            suspensionManager.updateSuspendedPackages(this, allBlocked, suspend = true)
+        // Extremely Distracting Apps are always timed, never explicitly blocked. They only join the
+        // suspended set when their daily timer has expired.
+        val explicitlyBlocked = (prefs.blockedPackages + ALWAYS_BLOCKED_PACKAGES)
+            .filterNot { EXTREMELY_DISTRACTING_PACKAGES.contains(it) }
+            .toSet()
+        val expired = prefs.appUsageSeconds.keys
+            .filter { prefs.isTimerExpired(it) }
+            .toSet()
+        val desiredSuspended = if (prefs.blockingEnabled && prefs.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
+            explicitlyBlocked + expired
         } else {
-            val allBlocked = prefs.blockedPackages + ALWAYS_BLOCKED_PACKAGES
-            DeviceOwnerSuspendStrategy().updateSuspendedPackages(this, allBlocked, suspend = false)
+            emptySet()
+        }
+
+        if (desiredSuspended != lastSuspendedPackages) {
+            val toSuspend = desiredSuspended - lastSuspendedPackages
+            val toUnsuspend = lastSuspendedPackages - desiredSuspended
+            if (toSuspend.isNotEmpty()) {
+                deviceOwnerStrategy.updateSuspendedPackages(this, toSuspend, suspend = true)
+            }
+            if (toUnsuspend.isNotEmpty()) {
+                deviceOwnerStrategy.updateSuspendedPackages(this, toUnsuspend, suspend = false)
+            }
+            lastSuspendedPackages = desiredSuspended
         }
     }
 
@@ -201,6 +292,10 @@ class FocusAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        if (lastSuspendedPackages.isNotEmpty()) {
+            deviceOwnerStrategy.updateSuspendedPackages(this, lastSuspendedPackages, suspend = false)
+            lastSuspendedPackages = emptySet()
+        }
         YouTubeTrackingState.reset()
         serviceScope.cancel()
         super.onDestroy()

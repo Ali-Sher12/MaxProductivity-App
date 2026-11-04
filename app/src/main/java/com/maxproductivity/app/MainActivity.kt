@@ -2,6 +2,7 @@ package com.maxproductivity.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,10 +17,14 @@ import com.maxproductivity.app.ui.theme.MaxProductivityTheme
 class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: MainViewModel
+    private var backgroundedAt: Long = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
 
         val factory = MainViewModelFactory(MaxProductivityApp.get(this))
         viewModel = ViewModelProvider(this, factory)[MainViewModel::class.java]
@@ -39,11 +44,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (::viewModel.isInitialized && backgroundedAt > 0L) {
+            if (System.currentTimeMillis() - backgroundedAt >= LOCK_GRACE_PERIOD_MS) {
+                viewModel.lock()
+            }
+            backgroundedAt = 0L
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) {
+            backgroundedAt = System.currentTimeMillis()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         if (::viewModel.isInitialized) {
             viewModel.refreshPermissions()
         }
+    }
+
+    private companion object {
+        const val LOCK_GRACE_PERIOD_MS = 30_000L
     }
 }
 

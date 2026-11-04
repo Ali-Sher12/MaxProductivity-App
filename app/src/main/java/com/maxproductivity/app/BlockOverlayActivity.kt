@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -39,42 +40,43 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.ui.theme.MaxProductivityTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class BlockOverlayActivity : ComponentActivity() {
 
+    private val payload = MutableStateFlow(BlockPayload())
+
     // This Activity is declared launchMode="singleInstance" in the manifest so it can render
-    // above everything, including other tasks. That means when a second block event fires while
-    // an earlier instance is still alive in the background (e.g. the user pressed the physical
-    // Home button instead of tapping our "Return Home" button, so finish() was never called),
-    // Android reuses the existing instance and calls onNewIntent() instead of onCreate(). Without
-    // this override, the Compose content already drawn from the *previous* block event just sits
-    // there — this is what caused the reminder message/image to sometimes look "stuck" or blank,
-    // and made tap-to-close feel unreliable, since the visible screen wasn't actually the one
-    // reacting to the latest intent/preferences. recreate() forces a real onCreate() every time,
-    // so the screen is always built fresh from the current message, image, and click handlers.
+    // above everything, including other tasks. When a second block event fires while an earlier
+    // instance is still alive, Android calls onNewIntent() instead of onCreate(). We update the
+    // payload state here (rather than relying on stale intent extras or a full recreate) so the
+    // current message and background image are always the ones shown.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        recreate()
+        payload.value = readPayload(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-
-        val intentMessage = intent.getStringExtra(EXTRA_MESSAGE)?.takeIf { it.isNotBlank() }
-        val intentBackgroundUri = intent.getStringExtra(EXTRA_BACKGROUND_URI).orEmpty()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
+        payload.value = readPayload(intent)
 
         setContent {
+            val currentPayload by payload.collectAsStateWithLifecycle()
             val preferences by MaxProductivityApp.get(this@BlockOverlayActivity)
                 .preferencesRepository
                 .preferencesFlow
                 .collectAsStateWithLifecycle(initialValue = AppPreferences())
 
-            val message = intentMessage ?: preferences.reminderText.ifBlank {
-                getString(R.string.block_overlay_default_message)
-            }
-            val backgroundUri = preferences.backgroundImageUri.ifBlank { intentBackgroundUri }
+            val message = currentPayload.message
+                .ifBlank { preferences.reminderText }
+                .ifBlank { getString(R.string.block_overlay_default_message) }
+            val backgroundUri = preferences.backgroundImageUri
+                .ifBlank { currentPayload.backgroundUri }
 
             MaxProductivityTheme {
                 BlockOverlayScreen(
@@ -89,6 +91,26 @@ class BlockOverlayActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        YouTubeTrackingState.isBlockOverlayActive = true
+    }
+
+    override fun onPause() {
+        YouTubeTrackingState.isBlockOverlayActive = false
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        YouTubeTrackingState.isBlockOverlayActive = false
+        super.onDestroy()
+    }
+
+    private fun readPayload(intent: Intent?): BlockPayload = BlockPayload(
+        message = intent?.getStringExtra(EXTRA_MESSAGE).orEmpty(),
+        backgroundUri = intent?.getStringExtra(EXTRA_BACKGROUND_URI).orEmpty(),
+    )
+
     private fun performGlobalActionHome() {
         val homeIntent = Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_HOME)
@@ -96,6 +118,11 @@ class BlockOverlayActivity : ComponentActivity() {
         }
         startActivity(homeIntent)
     }
+
+    private data class BlockPayload(
+        val message: String = "",
+        val backgroundUri: String = "",
+    )
 
     companion object {
         private const val EXTRA_MESSAGE = "extra_message"
@@ -106,10 +133,16 @@ class BlockOverlayActivity : ComponentActivity() {
             context: Context,
             message: String,
             blockedPackage: String,
+            backgroundUri: String = "",
         ): Intent = Intent(context, BlockOverlayActivity::class.java).apply {
             putExtra(EXTRA_MESSAGE, message)
             putExtra(EXTRA_PACKAGE, blockedPackage)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(EXTRA_BACKGROUND_URI, backgroundUri)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
         }
     }
 }

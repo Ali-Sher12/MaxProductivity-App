@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,48 +34,78 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.getValue
 import com.maxproductivity.app.data.LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
 import com.maxproductivity.app.ui.theme.MaxProductivityTheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class TimeNoticeActivity : ComponentActivity() {
 
-    private var targetPackage: String = ""
+    private data class TimeNoticePayload(
+        val targetPackage: String = "",
+        val limitMinutes: Int = LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES,
+        val remainingSeconds: Long = LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES * 60L,
+    )
+
+    private val payload = MutableStateFlow(TimeNoticePayload())
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        payload.value = readPayload(intent)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-
-        targetPackage = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
-        val limitMinutes = intent.getIntExtra(EXTRA_LIMIT_MINUTES, LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES)
-        val remainingSeconds = intent.getLongExtra(EXTRA_REMAINING_SECONDS, limitMinutes * 60L)
-
-        YouTubeTrackingState.isNoticeActive = true
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
+        payload.value = readPayload(intent)
 
         setContent {
+            val currentPayload by payload.collectAsStateWithLifecycle()
             MaxProductivityTheme {
                 TimeNoticeScreen(
-                    limitMinutes = limitMinutes,
-                    remainingSeconds = remainingSeconds,
+                    limitMinutes = currentPayload.limitMinutes,
+                    remainingSeconds = currentPayload.remainingSeconds,
                     onClose = {
-                        if (targetPackage.isNotBlank()) {
-                            FocusAccessibilityService.acknowledgeSession(targetPackage)
+                        if (currentPayload.targetPackage.isNotBlank()) {
+                            FocusAccessibilityService.acknowledgeSession(currentPayload.targetPackage)
+                            YouTubeTrackingState.updateForeground(currentPayload.targetPackage)
                         }
                         YouTubeTrackingState.isNoticeActive = false
                         finish()
                     },
                     onBack = {
+                        FocusAccessibilityService.clearAcknowledgedSession()
                         sendUserHome()
                         YouTubeTrackingState.isNoticeActive = false
                         finish()
-                    }
+                    },
                 )
             }
         }
     }
 
+    private fun readPayload(intent: Intent?): TimeNoticePayload {
+        val targetPackage = intent?.getStringExtra(EXTRA_PACKAGE).orEmpty()
+        val limitMinutes = intent?.getIntExtra(EXTRA_LIMIT_MINUTES, LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES)
+            ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
+        val remainingSeconds = intent?.getLongExtra(EXTRA_REMAINING_SECONDS, limitMinutes * 60L)
+            ?: (limitMinutes * 60L)
+        return TimeNoticePayload(targetPackage, limitMinutes, remainingSeconds)
+    }
+
     override fun onResume() {
         super.onResume()
         YouTubeTrackingState.isNoticeActive = true
+    }
+
+    override fun onPause() {
+        YouTubeTrackingState.isNoticeActive = false
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -104,7 +135,11 @@ class TimeNoticeActivity : ComponentActivity() {
             putExtra(EXTRA_PACKAGE, packageName)
             putExtra(EXTRA_REMAINING_SECONDS, remainingSeconds)
             putExtra(EXTRA_LIMIT_MINUTES, limitMinutes)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
         }
     }
 }

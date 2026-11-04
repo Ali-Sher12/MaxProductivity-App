@@ -12,7 +12,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
-import com.maxproductivity.app.data.LIMITED_SOCIAL_PACKAGES
+import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_PACKAGES
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,9 +32,6 @@ class YouTubeTimerService : Service() {
     @Volatile
     private var preferences: AppPreferences = AppPreferences()
 
-    @Volatile
-    private var accumulatedSeconds: Long = -1L
-
     private val localAppUsage = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     override fun onCreate() {
@@ -48,15 +45,6 @@ class YouTubeTimerService : Service() {
                 preferences = prefs
                 val today = LocalDate.now().toString()
 
-                val dbUsage = prefs.youtubeUsageSeconds
-                if (accumulatedSeconds == -1L || prefs.youtubeUsageDate != today) {
-                    accumulatedSeconds = dbUsage
-                } else {
-                    accumulatedSeconds = maxOf(accumulatedSeconds, dbUsage)
-                }
-
-                YouTubeTrackingState.isYouTubeLimitReached = hasReachedLimit(prefs, accumulatedSeconds)
-
                 if (prefs.appUsageDate != today) {
                     localAppUsage.clear()
                 } else {
@@ -69,6 +57,9 @@ class YouTubeTimerService : Service() {
                         }
                     }
                 }
+
+                YouTubeTrackingState.isYouTubeLimitReached =
+                    prefs.isTimerExpired(AppPreferencesRepository.YOUTUBE_PACKAGE)
             }
         }
 
@@ -110,69 +101,68 @@ class YouTubeTimerService : Service() {
                 delay(TICK_INTERVAL_MS)
                 val today = LocalDate.now().toString()
 
-                if (preferences.youtubeUsageDate != today || preferences.appUsageDate != today) {
-                    accumulatedSeconds = 0L
+                if (preferences.appUsageDate != today) {
                     localAppUsage.clear()
                     YouTubeTrackingState.isYouTubeLimitReached = false
                     repository.resetDailyUsageIfNeeded(today)
-                }
-
-                if (!FocusAccessibilityService.isRunning()) continue
-
-                val state = YouTubeTrackingState.snapshot()
-                if (state.isNoticeActive) {
-                    // "Time is limited. Make it count." pop-up is active; do NOT count time
                     continue
                 }
 
-                val fgPackage = state.foregroundPackage
+                if (!FocusAccessibilityService.isRunning()) continue
+                if (!preferences.blockingEnabled) continue
 
-                if (
-                    state.isYouTubeForeground &&
-                    fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE &&
-                    !state.isShortsActive &&
-                    !state.isYouTubeLimitReached
-                ) {
-                    accumulatedSeconds += 1
-                    repository.updateYoutubeUsage(accumulatedSeconds, today)
+                val state = YouTubeTrackingState.snapshot()
+                if (state.isNoticeActive || state.isBlockOverlayActive) {
+                    // LongTerm's pop-up is open; do not deduct time from the app underneath.
+                    continue
+                }
 
-                    if (hasReachedLimit(preferences, accumulatedSeconds)) {
+                val fgPackage = state.foregroundPackage ?: continue
+                if (fgPackage == packageName) continue
+
+                // Explicitly blocked apps are handled by the accessibility service.
+                if (preferences.blockedPackages.contains(fgPackage)) continue
+
+                val limitSeconds = preferences.getEffectiveLimitSeconds(fgPackage) ?: continue
+                val currentUsage = localAppUsage[fgPackage] ?: preferences.getUsageSeconds(fgPackage)
+
+                if (currentUsage >= limitSeconds) {
+                    if (fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE) {
                         YouTubeTrackingState.isYouTubeLimitReached = true
-                        sendUserHome()
-                        startActivity(
-                            BlockOverlayActivity.createIntent(
-                                this@YouTubeTimerService,
-                                getString(R.string.youtube_limit_reached),
-                                AppPreferencesRepository.YOUTUBE_PACKAGE,
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
                     }
-                } else if (fgPackage != null && fgPackage != AppPreferencesRepository.YOUTUBE_PACKAGE) {
-                    val limitMinutes = preferences.getEffectiveLimitMinutes(fgPackage)
-                    if (limitMinutes != null && limitMinutes > 0) {
-                        val currentUsage = localAppUsage[fgPackage] ?: 0L
-                        if (currentUsage < limitMinutes * 60L) {
-                            val newUsage = currentUsage + 1
-                            localAppUsage[fgPackage] = newUsage
-                            repository.updateAppUsage(fgPackage, newUsage, today)
+                    continue
+                }
 
-                            if (newUsage >= limitMinutes * 60L) {
-                                sendUserHome()
-                                val blockMessage = if (LIMITED_SOCIAL_PACKAGES.contains(fgPackage)) {
-                                    "Daily limit reached for this app (${limitMinutes}m)."
-                                } else {
-                                    preferences.reminderText
-                                }
-                                startActivity(
-                                    BlockOverlayActivity.createIntent(
-                                        this@YouTubeTimerService,
-                                        blockMessage,
-                                        fgPackage,
-                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                )
-                            }
-                        }
+                // Shorts sessions are always blocked and are not counted toward the normal
+                // YouTube limit.
+                if (
+                    fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE &&
+                    (state.isShortsActive || state.isYouTubeLimitReached)
+                ) {
+                    continue
+                }
+
+                val newUsage = currentUsage + 1
+                localAppUsage[fgPackage] = newUsage
+                repository.updateAppUsage(fgPackage, newUsage, today)
+
+                if (newUsage >= limitSeconds) {
+                    if (fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE) {
+                        YouTubeTrackingState.isYouTubeLimitReached = true
                     }
+                    val blockMessage = if (EXTREMELY_DISTRACTING_PACKAGES.contains(fgPackage)) {
+                        preferences.extremelyDistractingLimitMessage
+                    } else {
+                        preferences.timerLimitMessage
+                    }
+                    startActivity(
+                        BlockOverlayActivity.createIntent(
+                            this@YouTubeTimerService,
+                            blockMessage,
+                            fgPackage,
+                            preferences.backgroundImageUri,
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
                 }
             }
         }
@@ -184,11 +174,6 @@ class YouTubeTimerService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         startActivity(homeIntent)
-    }
-
-    private fun hasReachedLimit(prefs: AppPreferences, seconds: Long): Boolean {
-        if (prefs.youtubeDailyLimitMinutes <= 0) return false
-        return seconds >= prefs.youtubeDailyLimitMinutes * 60L
     }
 
     private fun buildNotification(): Notification {
@@ -215,7 +200,7 @@ class YouTubeTimerService : Service() {
             "Focus Mode",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Tracks YouTube usage while focus mode is active"
+            description = "Tracks app usage while focus mode is active"
         }
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }

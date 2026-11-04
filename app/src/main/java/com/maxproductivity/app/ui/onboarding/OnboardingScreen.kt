@@ -16,6 +16,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,8 +30,9 @@ fun OnboardingScreen(
     permissionStatuses: List<PermissionStatus>,
     onOpenPermission: (PermissionType) -> Unit,
     onContinue: () -> Unit,
+    onBack: (() -> Unit)? = null,
 ) {
-    val allGranted = permissionStatuses.all { it.isGranted }
+    val allGranted = permissionStatuses.isNotEmpty() && permissionStatuses.all { it.isGranted }
 
     Column(
         modifier = Modifier
@@ -39,13 +41,25 @@ fun OnboardingScreen(
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Welcome to LongTerm",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+            )
+            if (onBack != null) {
+                TextButton(onClick = onBack) {
+                    Text("Back")
+                }
+            }
+        }
         Text(
-            text = "Welcome to LongTerm",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = "Grant the permissions below to enable on-device app blocking, YouTube Shorts detection, and daily YouTube limits.",
+            text = "Grant the permissions below to enable on-device app blocking, YouTube Shorts detection, and daily app limits.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
         )

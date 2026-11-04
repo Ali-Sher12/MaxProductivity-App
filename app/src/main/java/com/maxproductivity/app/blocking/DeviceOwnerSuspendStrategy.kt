@@ -7,7 +7,12 @@ import com.maxproductivity.app.receiver.MyDeviceAdminReceiver
 
 class DeviceOwnerSuspendStrategy : BlockStrategy {
 
-    override fun blockPackage(context: Context, packageName: String, message: String) {
+    override fun blockPackage(
+        context: Context,
+        packageName: String,
+        message: String,
+        backgroundUri: String,
+    ) {
         updateSuspendedPackages(context, setOf(packageName), suspend = true)
     }
 

@@ -38,7 +38,6 @@
             android:exported="false"
             android:launchMode="singleInstance"
             android:showOnLockScreen="true"
-            android:taskAffinity=""
             android:theme="@style/Theme.MaxProductivity.Overlay" />
 
         <activity
@@ -46,7 +45,6 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop"
-            android:taskAffinity=""
             android:theme="@style/Theme.MaxProductivity.TranslucentDialog" />
 
         <service

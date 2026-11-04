@@ -10,8 +10,8 @@ class AppSuspensionManager(
         this.strategy = strategy
     }
 
-    fun blockPackage(context: Context, packageName: String, message: String) {
-        strategy.blockPackage(context, packageName, message)
+    fun blockPackage(context: Context, packageName: String, message: String, backgroundUri: String) {
+        strategy.blockPackage(context, packageName, message, backgroundUri)
     }
 
     fun updateSuspendedPackages(context: Context, packages: Set<String>, suspend: Boolean) {

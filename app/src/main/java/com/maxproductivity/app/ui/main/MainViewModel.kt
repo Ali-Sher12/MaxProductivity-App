@@ -1,54 +1,80 @@
 package com.maxproductivity.app.ui.main
 
 import android.app.admin.DevicePolicyManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.maxproductivity.app.MaxProductivityApp
 import com.maxproductivity.app.YouTubeTimerService
 import com.maxproductivity.app.blocking.BlockingStrategy
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
-import com.maxproductivity.app.data.LIMITED_SOCIAL_PACKAGES
-import com.maxproductivity.app.data.LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
-import com.maxproductivity.app.data.LIMITED_SOCIAL_MIN_LIMIT_MINUTES
-import com.maxproductivity.app.data.LIMITED_SOCIAL_MAX_LIMIT_MINUTES
+import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_PACKAGES
+import com.maxproductivity.app.data.OTHER_APP_MAX_LIMIT_MINUTES
+import com.maxproductivity.app.data.OTHER_APP_MIN_LIMIT_MINUTES
+import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES
+import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES
+import com.maxproductivity.app.util.PasswordUtils
 import com.maxproductivity.app.util.PermissionStatus
 import com.maxproductivity.app.util.PermissionUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.content.Context
+import java.io.File
 
 val fallbackLabels = mapOf(
     "com.instagram.android" to "Instagram",
     "com.zhiliaoapp.musically" to "TikTok",
     "com.ss.android.ugc.trill" to "TikTok",
+    "com.zhiliaoapp.musically.go" to "TikTok Lite",
     "com.reddit.frontpage" to "Reddit",
     "com.snapchat.android" to "Snapchat",
-    "com.twitter.android" to "Twitter",
+    "com.twitter.android" to "X (Twitter)",
+    "com.twitter.android.lite" to "X Lite",
+    "com.discord" to "Discord",
+    "com.discord.canary" to "Discord Canary",
+    "com.facebook.katana" to "Facebook",
+    "com.facebook.lite" to "Facebook Lite",
+    "com.facebook.orca" to "Messenger",
+    "com.instagram.barcelona" to "Threads",
+    "com.pinterest" to "Pinterest",
+    "tv.twitch.android.app" to "Twitch",
+    "xyz.blueskyweb.app" to "Bluesky",
+    "com.tumblr" to "Tumblr",
+    "com.bereal.ft" to "BeReal",
 )
+
+private const val OVERLAY_IMAGE_PREFIX = "block_overlay_image_"
 
 data class BlockableApp(
     val packageName: String,
     val label: String,
+    val isExtremelyDistracting: Boolean,
     val isBlocked: Boolean,
-    val hasTimer: Boolean = false,
-    val timerMinutes: Int = 30,
-    val isLimitedSocial: Boolean = false,
+    val hasTimer: Boolean,
+    val timerMinutes: Int,
+    val isTimerLockedForToday: Boolean,
+    val isTimerExpired: Boolean,
+    val usageSeconds: Long,
+    val displayedUsageSeconds: Long,
 )
 
 data class MainUiState(
+    val isReady: Boolean = false,
+    val hasPassword: Boolean = false,
+    val isUnlocked: Boolean = false,
+    val passwordError: String? = null,
     val showOnboarding: Boolean = true,
+    val onboardingCompleted: Boolean = false,
     val permissionStatuses: List<PermissionStatus> = emptyList(),
     val preferences: AppPreferences = AppPreferences(),
     val blockableApps: List<BlockableApp> = emptyList(),
-    val youtubeUsageSeconds: Long = 0L,
-    val appUsageSeconds: Map<String, Long> = emptyMap(),
     val isDeviceOwner: Boolean = false,
 )
 
@@ -61,36 +87,41 @@ class MainViewModel(
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     private var pendingPermissionContext: Context? = null
-    private var cachedBaseApps: List<BlockableApp>? = null
+    private var cachedBaseApps: List<InstalledApp>? = null
 
     init {
         viewModelScope.launch {
             repository.preferencesFlow.collect { prefs ->
-                val allApps = getBaseApps().map { app ->
-                    val isLimited = LIMITED_SOCIAL_PACKAGES.contains(app.packageName)
-                    val isBlocked = prefs.blockedPackages.contains(app.packageName)
-                    val limitMinutes = if (isLimited) {
-                        (prefs.timerLimits[app.packageName] ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES)
-                            .coerceIn(LIMITED_SOCIAL_MIN_LIMIT_MINUTES, LIMITED_SOCIAL_MAX_LIMIT_MINUTES)
-                    } else {
-                        prefs.timerLimits[app.packageName]
-                    }
-                    val hasTimer = isLimited || (limitMinutes != null && limitMinutes > 0)
-                    val timerMinutes = limitMinutes ?: 15
-                    app.copy(
-                        isBlocked = isBlocked,
+                val allApps = getBaseApps().map { entry ->
+                    val isExtremelyDistracting = EXTREMELY_DISTRACTING_PACKAGES.contains(entry.packageName)
+                    val hasTimer = prefs.hasActiveTimer(entry.packageName)
+                    val limitMinutes = prefs.getEffectiveLimitMinutes(entry.packageName)
+                    val isExpired = hasTimer && prefs.isTimerExpired(entry.packageName)
+                    BlockableApp(
+                        packageName = entry.packageName,
+                        label = entry.label,
+                        isExtremelyDistracting = isExtremelyDistracting,
+                        isBlocked = prefs.blockedPackages.contains(entry.packageName),
                         hasTimer = hasTimer,
-                        timerMinutes = timerMinutes,
-                        isLimitedSocial = isLimited,
+                        timerMinutes = limitMinutes ?: 0,
+                        isTimerLockedForToday = prefs.isTimerLockedForToday(entry.packageName),
+                        isTimerExpired = isExpired,
+                        usageSeconds = prefs.getUsageSeconds(entry.packageName),
+                        displayedUsageSeconds = prefs.getDisplayedUsageSeconds(entry.packageName),
                     )
                 }
                 _uiState.update { state ->
                     state.copy(
+                        isReady = true,
+                        hasPassword = prefs.passwordHash.isNotBlank(),
+                        showOnboarding = if (!state.isReady) {
+                            !prefs.onboardingCompleted
+                        } else {
+                            state.showOnboarding
+                        },
+                        onboardingCompleted = prefs.onboardingCompleted,
                         preferences = prefs,
                         blockableApps = allApps,
-                        youtubeUsageSeconds = prefs.youtubeUsageSeconds,
-                        appUsageSeconds = prefs.appUsageSeconds,
-                        showOnboarding = state.showOnboarding && !PermissionUtils.allGranted(app),
                     )
                 }
             }
@@ -99,14 +130,14 @@ class MainViewModel(
         updateDeviceOwnerStatus()
     }
 
-    private fun getBaseApps(): List<BlockableApp> {
+    private fun getBaseApps(): List<InstalledApp> {
         cachedBaseApps?.let { return it }
-        val loaded = getInstalledAndAlwaysBlockedApps()
+        val loaded = getInstalledAndExtremelyDistractingApps()
         cachedBaseApps = loaded
         return loaded
     }
 
-    private fun getInstalledAndAlwaysBlockedApps(): List<BlockableApp> {
+    private fun getInstalledAndExtremelyDistractingApps(): List<InstalledApp> {
         val pm = app.packageManager
         val installed = mutableMapOf<String, String>()
 
@@ -144,38 +175,86 @@ class MainViewModel(
 
         val myPackageName = app.packageName
 
-        // Deduplicate TikTok: if com.ss.android.ugc.trill is installed, use it;
-        // otherwise only keep com.zhiliaoapp.musically (never show both).
+        val tiktokPackage = when {
+            installed.containsKey("com.ss.android.ugc.trill") -> "com.ss.android.ugc.trill"
+            installed.containsKey("com.zhiliaoapp.musically.go") -> "com.zhiliaoapp.musically.go"
+            else -> "com.zhiliaoapp.musically"
+        }
+        val twitterPackage = if (installed.containsKey("com.twitter.android.lite")) {
+            "com.twitter.android.lite"
+        } else {
+            "com.twitter.android"
+        }
+        val facebookPackage = if (installed.containsKey("com.facebook.lite")) {
+            "com.facebook.lite"
+        } else {
+            "com.facebook.katana"
+        }
+        val discordPackage = if (installed.containsKey("com.discord.canary")) {
+            "com.discord.canary"
+        } else {
+            "com.discord"
+        }
+
         val targetSocialPackages = mutableSetOf(
             "com.instagram.android",
             "com.reddit.frontpage",
             "com.snapchat.android",
-            "com.twitter.android",
+            twitterPackage,
+            discordPackage,
+            tiktokPackage,
+            facebookPackage,
+            "com.facebook.orca",
+            "com.instagram.barcelona",
+            "com.pinterest",
+            "tv.twitch.android.app",
         )
-        if (installed.containsKey("com.ss.android.ugc.trill")) {
-            targetSocialPackages.add("com.ss.android.ugc.trill")
-        } else {
-            targetSocialPackages.add("com.zhiliaoapp.musically")
-        }
 
+        // Extremely Distracting Apps are always shown so their default/configured limits
+        // are visible, even if the app is not installed on this device.
         val allPackages = (installed.keys + targetSocialPackages)
-            .filter { it != myPackageName && (it != "com.ss.android.ugc.trill" || installed.containsKey("com.ss.android.ugc.trill")) }
-            .distinct()
-            .sortedBy {
-                (installed[it] ?: fallbackLabels[it] ?: it).lowercase()
+            .filter {
+                if (it == myPackageName) return@filter false
+                if (it == "com.ss.android.ugc.trill" || it == "com.zhiliaoapp.musically" || it == "com.zhiliaoapp.musically.go") {
+                    return@filter it == tiktokPackage
+                }
+                if (it == "com.twitter.android" || it == "com.twitter.android.lite") {
+                    return@filter it == twitterPackage
+                }
+                if (it == "com.facebook.katana" || it == "com.facebook.lite") {
+                    return@filter it == facebookPackage
+                }
+                if (it == "com.discord" || it == "com.discord.canary") {
+                    return@filter it == discordPackage
+                }
+                true
             }
+            .distinct()
 
-        return allPackages.map { pkg ->
-            val isLimited = LIMITED_SOCIAL_PACKAGES.contains(pkg)
-            BlockableApp(
-                packageName = pkg,
-                label = installed[pkg] ?: fallbackLabels[pkg] ?: pkg,
-                isBlocked = false,
-                hasTimer = isLimited,
-                timerMinutes = if (isLimited) LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES else 15,
-                isLimitedSocial = isLimited,
-            )
+        val isIgnoredInternalPackage: (String, String) -> Boolean = { pkg, label ->
+            if (EXTREMELY_DISTRACTING_PACKAGES.contains(pkg) || targetSocialPackages.contains(pkg)) {
+                false
+            } else {
+                pkg.contains(".accessibility") ||
+                    pkg.startsWith("com.accessibility.") ||
+                    pkg.startsWith("com.android.internal") ||
+                    pkg.startsWith("com.google.android.overlay") ||
+                    pkg.startsWith("com.samsung.android.overlay") ||
+                    label == pkg ||
+                    (label.startsWith("com.") && !label.contains(" ")) ||
+                    (label.startsWith("android.") && !label.contains(" "))
+            }
         }
+
+        return allPackages
+            .map { pkg ->
+                InstalledApp(
+                    packageName = pkg,
+                    label = installed[pkg] ?: fallbackLabels[pkg] ?: pkg,
+                )
+            }
+            .filterNot { isIgnoredInternalPackage(it.packageName, it.label) }
+            .sortedBy { it.label.lowercase() }
     }
 
     fun bindContext(context: Context) {
@@ -187,10 +266,7 @@ class MainViewModel(
     fun refreshPermissions() {
         val context = pendingPermissionContext ?: app
         _uiState.update {
-            it.copy(
-                permissionStatuses = PermissionUtils.getAllStatuses(context),
-                showOnboarding = it.showOnboarding && !PermissionUtils.allGranted(context),
-            )
+            it.copy(permissionStatuses = PermissionUtils.getAllStatuses(context))
         }
     }
 
@@ -199,11 +275,48 @@ class MainViewModel(
     }
 
     fun completeOnboarding() {
-        _uiState.update { it.copy(showOnboarding = false) }
+        viewModelScope.launch { repository.setOnboardingCompleted(true) }
+        _uiState.update { it.copy(showOnboarding = false, onboardingCompleted = true) }
     }
 
     fun showOnboarding() {
         _uiState.update { it.copy(showOnboarding = true) }
+    }
+
+    fun hideOnboarding() {
+        _uiState.update { it.copy(showOnboarding = false) }
+    }
+
+    fun createPassword(password: String) {
+        if (password.length < 4) {
+            _uiState.update { it.copy(passwordError = "Password must be at least 4 characters.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.Default) {
+            repository.setPasswordHash(PasswordUtils.hash(password))
+            _uiState.update {
+                it.copy(
+                    hasPassword = true,
+                    isUnlocked = true,
+                    passwordError = null,
+                )
+            }
+        }
+    }
+
+    fun unlock(password: String) {
+        val stored = _uiState.value.preferences.passwordHash
+        viewModelScope.launch(Dispatchers.Default) {
+            if (PasswordUtils.verify(password, stored)) {
+                _uiState.update { it.copy(isUnlocked = true, passwordError = null) }
+            } else {
+                _uiState.update { it.copy(passwordError = "Incorrect password.") }
+            }
+        }
+    }
+
+    fun lock() {
+        _uiState.update { it.copy(isUnlocked = false, passwordError = null) }
     }
 
     fun setBlockingEnabled(enabled: Boolean) {
@@ -211,6 +324,11 @@ class MainViewModel(
     }
 
     fun toggleBlockedPackage(packageName: String, blocked: Boolean) {
+        val appState = _uiState.value.blockableApps.find { it.packageName == packageName } ?: return
+        if (appState.isExtremelyDistracting) return
+        if (blocked && (appState.hasTimer || appState.isTimerExpired)) return
+        if (!blocked && appState.isTimerExpired) return
+
         viewModelScope.launch {
             val current = _uiState.value.preferences.blockedPackages
             val updated = if (blocked) current + packageName else current - packageName
@@ -218,38 +336,70 @@ class MainViewModel(
         }
     }
 
-    fun setAppTimerLimit(packageName: String, minutes: Int?) {
-        val today = java.time.LocalDate.now().toString()
-        if (_uiState.value.preferences.timerLastModifiedDates[packageName] == today) {
-            return
+    fun setAppTimerLimit(packageName: String, minutes: Int) {
+        val appState = _uiState.value.blockableApps.find { it.packageName == packageName } ?: return
+        if (appState.isBlocked) return
+        if (appState.isTimerExpired) return
+        if (appState.isTimerLockedForToday) return
+
+        val clamped = if (appState.isExtremelyDistracting) {
+            minutes.coerceIn(EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES, EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES)
+        } else {
+            minutes.coerceIn(OTHER_APP_MIN_LIMIT_MINUTES, OTHER_APP_MAX_LIMIT_MINUTES)
         }
-        viewModelScope.launch {
-            repository.setTimerLimitAndRecordChange(packageName, minutes)
-        }
+        viewModelScope.launch { repository.setTimer(packageName, clamped) }
     }
 
-    fun setYoutubeLimit(minutes: Int) {
-        viewModelScope.launch {
-            repository.setYoutubeDailyLimitAndRecordChange(minutes)
-        }
+    fun removeAppTimer(packageName: String) {
+        val appState = _uiState.value.blockableApps.find { it.packageName == packageName } ?: return
+        if (appState.isExtremelyDistracting) return
+        if (appState.isTimerExpired) return
+        if (appState.isTimerLockedForToday) return
+        viewModelScope.launch { repository.removeTimer(packageName) }
     }
 
     fun setReminderText(text: String) {
         viewModelScope.launch { repository.setReminderText(text) }
     }
 
+    fun setTimerLimitMessage(text: String) {
+        viewModelScope.launch { repository.setTimerLimitMessage(text) }
+    }
+
+    fun setExtremelyDistractingLimitMessage(text: String) {
+        viewModelScope.launch { repository.setExtremelyDistractingLimitMessage(text) }
+    }
+
     fun setBackgroundImageUri(uri: String) {
-        viewModelScope.launch {
-            val parsedUri = Uri.parse(uri)
-            try {
-                app.contentResolver.takePersistableUriPermission(
-                    parsedUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            } catch (_: SecurityException) {
-                // OpenDocument URIs should support this; ignore if unavailable.
+        viewModelScope.launch(Dispatchers.IO) {
+            if (uri.isBlank()) {
+                app.filesDir.listFiles()
+                    ?.filter { it.name.startsWith(OVERLAY_IMAGE_PREFIX) }
+                    ?.forEach { it.delete() }
+                repository.setBackgroundImageUri("")
+                return@launch
             }
-            repository.setBackgroundImageUri(uri)
+
+            val parsedUri = Uri.parse(uri)
+            val target = File(app.filesDir, "$OVERLAY_IMAGE_PREFIX${System.currentTimeMillis()}")
+            try {
+                app.contentResolver.openInputStream(parsedUri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (target.exists() && target.length() > 0L) {
+                    app.filesDir.listFiles()
+                        ?.filter { it.name.startsWith(OVERLAY_IMAGE_PREFIX) && it != target }
+                        ?.forEach { it.delete() }
+                    repository.setBackgroundImageUri(Uri.fromFile(target).toString())
+                } else {
+                    target.delete()
+                    repository.setBackgroundImageUri(uri)
+                }
+            } catch (_: Exception) {
+                target.delete()
+                // Fall back to the original URI; Coil may still be able to read it.
+                repository.setBackgroundImageUri(uri)
+            }
         }
     }
 
@@ -257,8 +407,8 @@ class MainViewModel(
         viewModelScope.launch { repository.setBlockingStrategy(strategy) }
     }
 
-    fun setBlockYouTubeShorts(enabled: Boolean) {
-        viewModelScope.launch { repository.setBlockYouTubeShorts(enabled) }
+    fun setMotto(text: String) {
+        viewModelScope.launch { repository.setMotto(text) }
     }
 
     private fun startTimerService(context: Context) {
@@ -276,4 +426,9 @@ class MainViewModel(
             it.copy(isDeviceOwner = dpm?.isDeviceOwnerApp(app.packageName) == true)
         }
     }
+
+    private data class InstalledApp(
+        val packageName: String,
+        val label: String,
+    )
 }

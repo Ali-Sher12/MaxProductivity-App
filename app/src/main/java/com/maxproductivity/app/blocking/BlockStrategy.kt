@@ -11,6 +11,12 @@ enum class BlockingStrategy {
 }
 
 interface BlockStrategy {
-    fun blockPackage(context: android.content.Context, packageName: String, message: String)
+    fun blockPackage(
+        context: android.content.Context,
+        packageName: String,
+        message: String,
+        backgroundUri: String,
+    )
+
     fun updateSuspendedPackages(context: android.content.Context, packages: Set<String>, suspend: Boolean)
 }
