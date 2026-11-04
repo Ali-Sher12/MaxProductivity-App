@@ -12,14 +12,14 @@ import javax.crypto.spec.PBEKeySpec
  */
 object PasswordUtils {
 
-    private const val ITERATIONS = 120_000
+    private const val DEFAULT_ITERATIONS = 10_000
     private const val KEY_LENGTH_BITS = 256
     private const val SALT_BYTES = 16
 
     fun hash(password: String): String {
         val salt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
-        val hash = derive(password, salt, ITERATIONS)
-        return "$ITERATIONS:${salt.toBase64()}:${hash.toBase64()}"
+        val hash = derive(password, salt, DEFAULT_ITERATIONS)
+        return "$DEFAULT_ITERATIONS:${salt.toBase64()}:${hash.toBase64()}"
     }
 
     fun verify(password: String, stored: String): Boolean {
@@ -31,6 +31,13 @@ object PasswordUtils {
         val expected = parts[2].fromBase64() ?: return false
         val actual = derive(password, salt, iterations)
         return MessageDigest.isEqual(expected, actual)
+    }
+
+    fun needsRehash(stored: String): Boolean {
+        val parts = stored.split(':')
+        if (parts.size != 3) return false
+        val iterations = parts[0].toIntOrNull() ?: return false
+        return iterations > DEFAULT_ITERATIONS
     }
 
     private fun derive(password: String, salt: ByteArray, iterations: Int): ByteArray {

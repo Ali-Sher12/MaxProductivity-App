@@ -44,7 +44,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -75,7 +74,6 @@ import com.maxproductivity.app.data.OTHER_APP_MIN_LIMIT_MINUTES
 @Composable
 fun MainScreen(
     uiState: MainUiState,
-    onToggleBlocking: (Boolean) -> Unit,
     onTogglePackage: (String, Boolean) -> Unit,
     onAppTimerChange: (String, Int) -> Unit,
     onRemoveTimer: (String) -> Unit,
@@ -88,6 +86,8 @@ fun MainScreen(
     onRefreshPermissions: () -> Unit,
     onOpenOnboarding: () -> Unit,
     onLock: () -> Unit,
+    onChangePassword: (String, String) -> Unit,
+    onClearPasswordError: () -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
@@ -131,7 +131,6 @@ fun MainScreen(
             when (selectedTab) {
                 0 -> BlockAppsTab(
                     uiState = uiState,
-                    onToggleBlocking = onToggleBlocking,
                     onTogglePackage = onTogglePackage,
                 )
 
@@ -151,6 +150,8 @@ fun MainScreen(
                     onBlockingStrategyChange = onBlockingStrategyChange,
                     onRefreshPermissions = onRefreshPermissions,
                     onOpenOnboarding = onOpenOnboarding,
+                    onChangePassword = onChangePassword,
+                    onClearPasswordError = onClearPasswordError,
                 )
             }
         }
@@ -200,7 +201,6 @@ private fun MainTopBar(
 @Composable
 private fun BlockAppsTab(
     uiState: MainUiState,
-    onToggleBlocking: (Boolean) -> Unit,
     onTogglePackage: (String, Boolean) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
@@ -215,38 +215,6 @@ private fun BlockAppsTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                ),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Blocking enabled",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            text = "Turn this off to pause all blocking and timers.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
-                        )
-                    }
-                    Switch(
-                        checked = uiState.preferences.blockingEnabled,
-                        onCheckedChange = onToggleBlocking,
-                    )
-                }
-            }
-        }
-
         item {
             OutlinedTextField(
                 value = query,
@@ -801,6 +769,8 @@ private fun PopUpsTab(
     onBlockingStrategyChange: (BlockingStrategy) -> Unit,
     onRefreshPermissions: () -> Unit,
     onOpenOnboarding: () -> Unit,
+    onChangePassword: (String, String) -> Unit,
+    onClearPasswordError: () -> Unit,
 ) {
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -815,6 +785,11 @@ private fun PopUpsTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        ChangePasswordCard(
+            passwordError = uiState.passwordError,
+            onChangePassword = onChangePassword,
+            onClearError = onClearPasswordError,
+        )
         MessageEditorCard(
             title = "Blocked app message",
             subtitle = "Shown when an app you blocked is opened.",
@@ -889,21 +864,26 @@ private fun PopUpsTab(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
                         text = status.title,
                         style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = if (status.isGranted) "Granted" else "Required",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = if (status.isGranted) "✓ Granted" else "Required",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
                         color = if (status.isGranted) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.error
                         },
+                        modifier = Modifier.padding(start = 12.dp),
                     )
                 }
             }
@@ -1088,6 +1068,136 @@ private fun OverlayImageCard(
             Spacer(modifier = Modifier.height(10.dp))
             Button(onClick = onPickImage) {
                 Text("Pick image")
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Change Password Card
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun ChangePasswordCard(
+    passwordError: String?,
+    onChangePassword: (String, String) -> Unit,
+    onClearError: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var localError by remember { mutableStateOf<String?>(null) }
+    var successMessage by remember { mutableStateOf<String?>(null) }
+
+    // Detect when the external passwordError clears (meaning changePassword succeeded)
+    val prevError = remember { mutableStateOf(passwordError) }
+    androidx.compose.runtime.LaunchedEffect(passwordError) {
+        if (prevError.value != null && passwordError == null && expanded) {
+            // Success
+            successMessage = "Password changed successfully."
+            expanded = false
+            currentPassword = ""; newPassword = ""; confirmPassword = ""
+        }
+        prevError.value = passwordError
+    }
+
+    SettingsCard(title = "Change Password") {
+        Text(
+            text = "Update your LongTerm password.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+        )
+        if (successMessage != null) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = successMessage!!,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        if (!expanded) {
+            OutlinedButton(
+                onClick = { expanded = true; successMessage = null; onClearError() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Change Password")
+            }
+        } else {
+            OutlinedTextField(
+                value = currentPassword,
+                onValueChange = { currentPassword = it; localError = null; onClearError() },
+                label = { Text("Current password") },
+                singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Next,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = newPassword,
+                onValueChange = { newPassword = it; localError = null; onClearError() },
+                label = { Text("New password") },
+                singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Next,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = confirmPassword,
+                onValueChange = { confirmPassword = it; localError = null; onClearError() },
+                label = { Text("Confirm new password") },
+                singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            val displayError = localError ?: passwordError
+            if (displayError != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = displayError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        expanded = false
+                        currentPassword = ""; newPassword = ""; confirmPassword = ""
+                        localError = null; onClearError()
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Cancel")
+                }
+                Button(
+                    onClick = {
+                        when {
+                            currentPassword.isBlank() -> localError = "Enter your current password."
+                            newPassword.length < 4 -> localError = "New password must be at least 4 characters."
+                            newPassword != confirmPassword -> localError = "Passwords do not match."
+                            else -> onChangePassword(currentPassword, newPassword)
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Save")
+                }
             }
         }
     }

@@ -109,7 +109,6 @@ class YouTubeTimerService : Service() {
                 }
 
                 if (!FocusAccessibilityService.isRunning()) continue
-                if (!preferences.blockingEnabled) continue
 
                 val state = YouTubeTrackingState.snapshot()
                 if (state.isNoticeActive || state.isBlockOverlayActive) {

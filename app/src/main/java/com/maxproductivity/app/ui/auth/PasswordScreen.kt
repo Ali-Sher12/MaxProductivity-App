@@ -7,20 +7,25 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -84,6 +89,22 @@ fun UnlockScreen(
     onUnlock: (String) -> Unit,
 ) {
     var password by remember { mutableStateOf("") }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var isChecking by remember { mutableStateOf(false) }
+
+    LaunchedEffect(error) {
+        if (error != null) {
+            isChecking = false
+        }
+    }
+
+    val attemptUnlock = {
+        if (!isChecking && password.isNotBlank()) {
+            isChecking = true
+            keyboardController?.hide()
+            onUnlock(password)
+        }
+    }
 
     PasswordScaffold(
         title = "Welcome back",
@@ -100,11 +121,15 @@ fun UnlockScreen(
                     keyboardType = KeyboardType.Password,
                     imeAction = ImeAction.Done,
                 ),
+                keyboardActions = KeyboardActions(
+                    onDone = { attemptUnlock() }
+                ),
                 modifier = Modifier.fillMaxWidth(),
             )
         },
         buttonText = "Unlock",
-        onClick = { onUnlock(password) },
+        isLoading = isChecking,
+        onClick = attemptUnlock,
     )
 }
 
@@ -115,6 +140,7 @@ private fun PasswordScaffold(
     error: String?,
     fields: @Composable () -> Unit,
     buttonText: String,
+    isLoading: Boolean = false,
     onClick: () -> Unit,
 ) {
     Column(
@@ -162,9 +188,18 @@ private fun PasswordScaffold(
                 Spacer(modifier = Modifier.height(20.dp))
                 Button(
                     onClick = onClick,
+                    enabled = !isLoading,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(buttonText)
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text(buttonText)
+                    }
                 }
             }
         }

@@ -63,7 +63,6 @@ fun AppRoot(
         else -> {
             MainScreen(
                 uiState = uiState,
-                onToggleBlocking = viewModel::setBlockingEnabled,
                 onTogglePackage = viewModel::toggleBlockedPackage,
                 onAppTimerChange = viewModel::setAppTimerLimit,
                 onRemoveTimer = viewModel::removeAppTimer,
@@ -76,6 +75,8 @@ fun AppRoot(
                 onRefreshPermissions = viewModel::refreshPermissions,
                 onOpenOnboarding = viewModel::showOnboarding,
                 onLock = viewModel::lock,
+                onChangePassword = viewModel::changePassword,
+                onClearPasswordError = viewModel::clearPasswordError,
             )
         }
     }

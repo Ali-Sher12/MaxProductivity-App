@@ -308,11 +308,35 @@ class MainViewModel(
         val stored = _uiState.value.preferences.passwordHash
         viewModelScope.launch(Dispatchers.Default) {
             if (PasswordUtils.verify(password, stored)) {
+                // Silently re-hash if the stored hash uses old iteration count
+                if (PasswordUtils.needsRehash(stored)) {
+                    repository.setPasswordHash(PasswordUtils.hash(password))
+                }
                 _uiState.update { it.copy(isUnlocked = true, passwordError = null) }
             } else {
                 _uiState.update { it.copy(passwordError = "Incorrect password.") }
             }
         }
+    }
+
+    fun changePassword(currentPassword: String, newPassword: String) {
+        val stored = _uiState.value.preferences.passwordHash
+        if (newPassword.length < 4) {
+            _uiState.update { it.copy(passwordError = "New password must be at least 4 characters.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.Default) {
+            if (!PasswordUtils.verify(currentPassword, stored)) {
+                _uiState.update { it.copy(passwordError = "Current password is incorrect.") }
+                return@launch
+            }
+            repository.setPasswordHash(PasswordUtils.hash(newPassword))
+            _uiState.update { it.copy(passwordError = null) }
+        }
+    }
+
+    fun clearPasswordError() {
+        _uiState.update { it.copy(passwordError = null) }
     }
 
     fun lock() {

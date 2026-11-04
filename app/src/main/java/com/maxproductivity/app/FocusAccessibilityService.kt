@@ -79,13 +79,12 @@ class FocusAccessibilityService : AccessibilityService() {
         if (packageName == AppPreferencesRepository.YOUTUBE_PACKAGE) {
             updateYouTubeTrackingState()
 
-            // YouTube Shorts can NEVER be unblocked. They always remain blocked even if blockingEnabled is false.
+            // YouTube Shorts can NEVER be unblocked. They always remain blocked.
             if (lastShortsDetected) {
                 blockShorts()
                 return
             }
 
-            if (!preferences.blockingEnabled) return
             handleYouTubeBlocking()
             return
         }
@@ -106,8 +105,6 @@ class FocusAccessibilityService : AccessibilityService() {
         if (packageName != acknowledgedPackageSession) {
             acknowledgedPackageSession = null
         }
-
-        if (!preferences.blockingEnabled) return
 
         // Apps with an active timer (Extremely Distracting apps or user-configured timed apps)
         if (preferences.hasActiveTimer(packageName)) {
@@ -152,9 +149,7 @@ class FocusAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (preferences.blockingEnabled) {
-            handleYouTubeBlocking()
-        }
+        handleYouTubeBlocking()
     }
 
     private fun updateYouTubeTrackingState() {
@@ -264,7 +259,7 @@ class FocusAccessibilityService : AccessibilityService() {
         val expired = prefs.appUsageSeconds.keys
             .filter { prefs.isTimerExpired(it) }
             .toSet()
-        val desiredSuspended = if (prefs.blockingEnabled && prefs.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
+        val desiredSuspended = if (prefs.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
             explicitlyBlocked + expired
         } else {
             emptySet()
