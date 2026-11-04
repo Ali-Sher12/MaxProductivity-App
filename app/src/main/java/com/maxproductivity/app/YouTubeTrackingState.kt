@@ -6,6 +6,7 @@ object YouTubeTrackingState {
         val isYouTubeForeground: Boolean,
         val isShortsActive: Boolean,
         val isYouTubeLimitReached: Boolean,
+        val isNoticeActive: Boolean,
         val foregroundPackage: String?,
     )
 
@@ -21,6 +22,9 @@ object YouTubeTrackingState {
     var isYouTubeLimitReached: Boolean = false
 
     @Volatile
+    var isNoticeActive: Boolean = false
+
+    @Volatile
     var foregroundPackage: String? = null
         private set
 
@@ -29,6 +33,7 @@ object YouTubeTrackingState {
         isYouTubeForeground = isYouTubeForeground,
         isShortsActive = isShortsActive,
         isYouTubeLimitReached = isYouTubeLimitReached,
+        isNoticeActive = isNoticeActive,
         foregroundPackage = foregroundPackage,
     )
 
@@ -54,6 +59,7 @@ object YouTubeTrackingState {
         isYouTubeForeground = false
         isShortsActive = false
         isYouTubeLimitReached = false
+        isNoticeActive = false
         foregroundPackage = null
     }
 }

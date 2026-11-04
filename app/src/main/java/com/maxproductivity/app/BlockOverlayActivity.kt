@@ -71,8 +71,8 @@ class BlockOverlayActivity : ComponentActivity() {
                 .preferencesFlow
                 .collectAsStateWithLifecycle(initialValue = AppPreferences())
 
-            val message = preferences.reminderText.ifBlank {
-                intentMessage ?: getString(R.string.block_overlay_default_message)
+            val message = intentMessage ?: preferences.reminderText.ifBlank {
+                getString(R.string.block_overlay_default_message)
             }
             val backgroundUri = preferences.backgroundImageUri.ifBlank { intentBackgroundUri }
 

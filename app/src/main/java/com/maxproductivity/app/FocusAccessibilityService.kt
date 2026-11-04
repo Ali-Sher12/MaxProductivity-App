@@ -9,6 +9,8 @@ import com.maxproductivity.app.blocking.AppSuspensionManager
 import com.maxproductivity.app.blocking.BlockingStrategy
 import com.maxproductivity.app.blocking.DeviceOwnerSuspendStrategy
 import com.maxproductivity.app.data.ALWAYS_BLOCKED_PACKAGES
+import com.maxproductivity.app.data.LIMITED_SOCIAL_PACKAGES
+import com.maxproductivity.app.data.LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
@@ -82,7 +84,35 @@ class FocusAccessibilityService : AccessibilityService() {
         YouTubeTrackingState.clearYouTubeForeground()
         lastShortsDetected = false
 
+        // Do not intercept or clear session when our own UI (TimeNoticeActivity / BlockOverlayActivity) is shown
+        if (packageName == this.packageName) {
+            return
+        }
+
+        // Switching to a different app clears the previously acknowledged session
+        if (packageName != acknowledgedPackageSession) {
+            acknowledgedPackageSession = null
+        }
+
         if (!preferences.blockingEnabled) return
+
+        // Limited social media apps (Instagram, TikTok, Twitter/X, Reddit, Snapchat)
+        if (LIMITED_SOCIAL_PACKAGES.contains(packageName)) {
+            val usageSeconds = preferences.appUsageSeconds[packageName] ?: 0L
+            val limitMinutes = preferences.getEffectiveLimitMinutes(packageName) ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
+            val limitSeconds = limitMinutes * 60L
+            if (usageSeconds >= limitSeconds) {
+                blockApp(packageName, "Daily limit reached for this app (${limitMinutes}m).")
+                return
+            }
+
+            if (acknowledgedPackageSession != packageName) {
+                val remainingSeconds = maxOf(1L, limitSeconds - usageSeconds)
+                startActivity(TimeNoticeActivity.createIntent(this, packageName, remainingSeconds, limitMinutes))
+                return
+            }
+            return
+        }
 
         when {
             ALWAYS_BLOCKED_PACKAGES.contains(packageName) -> blockApp(packageName, preferences.reminderText)
@@ -117,13 +147,13 @@ class FocusAccessibilityService : AccessibilityService() {
 
     private fun handleYouTubeBlocking() {
         if (YouTubeTrackingState.isYouTubeLimitReached) {
-            blockYouTube(preferences.reminderText)
+            blockYouTube(getString(R.string.youtube_limit_reached))
             return
         }
 
         if (lastShortsDetected) {
             performGlobalAction(GLOBAL_ACTION_BACK)
-            blockYouTube(preferences.reminderText)
+            blockYouTube(getString(R.string.shorts_blocked_message))
         }
     }
 
@@ -180,6 +210,17 @@ class FocusAccessibilityService : AccessibilityService() {
         @Volatile
         private var instance: FocusAccessibilityService? = null
 
+        @Volatile
+        private var acknowledgedPackageSession: String? = null
+
         fun isRunning(): Boolean = instance != null
+
+        fun acknowledgeSession(packageName: String) {
+            acknowledgedPackageSession = packageName
+        }
+
+        fun clearAcknowledgedSession() {
+            acknowledgedPackageSession = null
+        }
     }
 }

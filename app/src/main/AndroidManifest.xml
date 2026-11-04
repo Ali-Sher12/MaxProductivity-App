@@ -4,7 +4,10 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         android:minSdkVersion="21"
         tools:ignore="ProtectedPermissions" />
@@ -37,6 +40,14 @@
             android:showOnLockScreen="true"
             android:taskAffinity=""
             android:theme="@style/Theme.MaxProductivity.Overlay" />
+
+        <activity
+            android:name=".TimeNoticeActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/Theme.MaxProductivity.TranslucentDialog" />
 
         <service
             android:name=".FocusAccessibilityService"

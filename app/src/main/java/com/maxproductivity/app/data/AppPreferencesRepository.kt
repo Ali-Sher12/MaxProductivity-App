@@ -17,13 +17,19 @@ import java.time.LocalDate
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
 
-val ALWAYS_BLOCKED_PACKAGES = setOf(
+val LIMITED_SOCIAL_PACKAGES = setOf(
     "com.instagram.android",
     "com.zhiliaoapp.musically",
+    "com.ss.android.ugc.trill",
     "com.reddit.frontpage",
     "com.snapchat.android",
     "com.twitter.android",
 )
+const val LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES = 15
+const val LIMITED_SOCIAL_MIN_LIMIT_MINUTES = 1
+const val LIMITED_SOCIAL_MAX_LIMIT_MINUTES = 15
+
+val ALWAYS_BLOCKED_PACKAGES: Set<String> = emptySet()
 
 data class AppPreferences(
     val blockedPackages: Set<String> = emptySet(),
@@ -39,14 +45,31 @@ data class AppPreferences(
     val backgroundImageUri: String = "",
     val blockingStrategy: BlockingStrategy = BlockingStrategy.ACCESSIBILITY,
     val blockYouTubeShorts: Boolean = true,
-)
+) {
+    fun getEffectiveLimitMinutes(packageName: String): Int? {
+        if (LIMITED_SOCIAL_PACKAGES.contains(packageName)) {
+            val configured = timerLimits[packageName]
+            return (configured ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES)
+                .coerceIn(LIMITED_SOCIAL_MIN_LIMIT_MINUTES, LIMITED_SOCIAL_MAX_LIMIT_MINUTES)
+        }
+        return timerLimits[packageName]
+    }
+}
 
 class AppPreferencesRepository(private val context: Context) {
 
     val preferencesFlow: Flow<AppPreferences> = context.dataStore.data.map { prefs ->
+        val rawTimerLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap()
+        val mergedTimerLimits = rawTimerLimits.toMutableMap()
+        for (pkg in LIMITED_SOCIAL_PACKAGES) {
+            val existing = rawTimerLimits[pkg]
+            mergedTimerLimits[pkg] = (existing ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES)
+                .coerceIn(LIMITED_SOCIAL_MIN_LIMIT_MINUTES, LIMITED_SOCIAL_MAX_LIMIT_MINUTES)
+        }
+
         AppPreferences(
             blockedPackages = prefs[KEY_BLOCKED_PACKAGES] ?: emptySet(),
-            timerLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap(),
+            timerLimits = mergedTimerLimits,
             timerLastModifiedDates = (prefs[KEY_TIMER_LAST_MODIFIED] ?: emptySet()).toStringMap(),
             blockingEnabled = prefs[KEY_BLOCKING_ENABLED] ?: true,
             youtubeDailyLimitMinutes = prefs[KEY_YOUTUBE_LIMIT_MINUTES] ?: 60,
@@ -73,10 +96,16 @@ class AppPreferencesRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             val today = LocalDate.now().toString()
             val currentLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap().toMutableMap()
-            if (minutes == null || minutes <= 0) {
-                currentLimits.remove(packageName)
+            if (LIMITED_SOCIAL_PACKAGES.contains(packageName)) {
+                val clamped = (minutes ?: LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES)
+                    .coerceIn(LIMITED_SOCIAL_MIN_LIMIT_MINUTES, LIMITED_SOCIAL_MAX_LIMIT_MINUTES)
+                currentLimits[packageName] = clamped
             } else {
-                currentLimits[packageName] = minutes
+                if (minutes == null || minutes <= 0) {
+                    currentLimits.remove(packageName)
+                } else {
+                    currentLimits[packageName] = minutes.coerceIn(1, 60)
+                }
             }
             prefs[KEY_TIMER_LIMITS] = currentLimits.toTimerSet()
 

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Max Productivity</string>
+    <string name="app_name">LongTerm</string>
     <string name="accessibility_service_description">Detects distracting apps and YouTube Shorts to help you stay focused.</string>
     <string name="timer_notification_title">Focus mode active</string>
     <string name="timer_notification_text">Tracking YouTube usage</string>

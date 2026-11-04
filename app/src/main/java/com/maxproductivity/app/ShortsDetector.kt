@@ -4,15 +4,17 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 object ShortsDetector {
 
-    private val resourceIdSignatures = listOf(
+    val resourceIdSignatures = listOf(
         "reel_watch",
         "reel_container",
         "reel_pager",
         "reel_recycler",
         "reel_video",
+        "reel_player",
         "shorts_player",
         "shorts_video",
         "shorts_reel",
+        "shorts_container",
     )
 
     fun isShortsScreen(root: AccessibilityNodeInfo?): Boolean {
@@ -35,13 +37,17 @@ object ShortsDetector {
     }
 
     private fun matchesNode(node: AccessibilityNodeInfo): Boolean {
-        val viewId = node.viewIdResourceName?.lowercase().orEmpty()
+        return matchesViewId(node.viewIdResourceName)
+    }
+
+    fun matchesViewId(viewId: String?): Boolean {
+        val id = viewId?.lowercase().orEmpty()
         
         // Explicitly ignore tabs, buttons, or navigation bars to prevent home-screen false positives
-        if (viewId.contains("tab") || viewId.contains("navigation") || viewId.contains("bar") || viewId.contains("button")) {
+        if (id.contains("tab") || id.contains("navigation") || id.contains("bar") || id.contains("button")) {
             return false
         }
 
-        return resourceIdSignatures.any { viewId.contains(it) }
+        return resourceIdSignatures.any { id.contains(it) }
     }
 }

@@ -46,6 +46,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.maxproductivity.app.blocking.BlockingStrategy
 import com.maxproductivity.app.data.ALWAYS_BLOCKED_PACKAGES
+import com.maxproductivity.app.data.LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
+import com.maxproductivity.app.data.LIMITED_SOCIAL_MAX_LIMIT_MINUTES
+import com.maxproductivity.app.data.LIMITED_SOCIAL_MIN_LIMIT_MINUTES
 import kotlin.math.floor
 
 @Composable
@@ -104,15 +107,6 @@ fun MainScreen(
             }
         }
 
-        SettingsCard(title = "Blocking") {
-            SettingRow(
-                title = "Enable blocking",
-                subtitle = "Intercept distracting apps and YouTube limits",
-                checked = uiState.preferences.blockingEnabled,
-                onCheckedChange = onToggleBlocking,
-            )
-        }
-
         SettingsCard(title = "App Blocklist & Timers") {
             val activeApps = uiState.blockableApps.filter {
                 it.isBlocked || it.hasTimer
@@ -135,8 +129,8 @@ fun MainScreen(
                             onTogglePackage = onTogglePackage,
                             onAppTimerChange = { pkg, minutes ->
                                 if (uiState.preferences.timerLastModifiedDates[pkg] != today) {
-                                    appToConfirmTimer = app.copy(hasTimer = minutes != null, timerMinutes = minutes ?: 30)
-                                    tempTimerMinutes = minutes ?: 30
+                                    appToConfirmTimer = app.copy(hasTimer = minutes != null, timerMinutes = minutes ?: 15)
+                                    tempTimerMinutes = minutes ?: 15
                                 }
                             }
                         )
@@ -165,7 +159,7 @@ fun MainScreen(
 
         SettingsCard(title = "YouTube") {
             Text(
-                text = "Shorts are always blocked by design.",
+                text = "Shorts are completely blocked by design.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
             )
@@ -186,10 +180,10 @@ fun MainScreen(
                         Slider(
                             value = localLimitInt.toFloat(),
                             onValueChange = {
-                                localLimitInt = it.toInt().coerceIn(5, 120)
+                                localLimitInt = it.toInt().coerceIn(1, 60)
                             },
-                            valueRange = 5f..120f,
-                            steps = 22
+                            valueRange = 1f..60f,
+                            steps = 58
                         )
                     }
                     Button(
@@ -359,8 +353,14 @@ fun MainScreen(
                                     onTogglePackage = onTogglePackage,
                                     onAppTimerChange = { pkg, minutes ->
                                         if (!isTimerLocked) {
-                                            appToConfirmTimer = app.copy(hasTimer = minutes != null, timerMinutes = minutes ?: 30)
-                                            tempTimerMinutes = minutes ?: 30
+                                            val initialMinutes = if (app.isLimitedSocial) {
+                                                (minutes ?: app.timerMinutes).coerceIn(LIMITED_SOCIAL_MIN_LIMIT_MINUTES, LIMITED_SOCIAL_MAX_LIMIT_MINUTES)
+                                            } else {
+                                                minutes ?: 30
+                                            }
+                                            val hasTimer = if (app.isLimitedSocial) true else (minutes != null)
+                                            appToConfirmTimer = app.copy(hasTimer = hasTimer, timerMinutes = initialMinutes)
+                                            tempTimerMinutes = initialMinutes
                                         }
                                     }
                                 )
@@ -378,18 +378,25 @@ fun MainScreen(
 
     if (appToConfirmTimer != null) {
         val app = appToConfirmTimer!!
+        val isSocial = app.isLimitedSocial
+        val minLimit = if (isSocial) LIMITED_SOCIAL_MIN_LIMIT_MINUTES else 1
+        val maxLimit = if (isSocial) LIMITED_SOCIAL_MAX_LIMIT_MINUTES else 60
+        val steps = (maxLimit - minLimit) - 1
+
         AlertDialog(
             onDismissRequest = { appToConfirmTimer = null },
             title = {
                 Text(
-                    text = if (app.hasTimer) "Set Daily Limit" else "Disable Daily Limit",
+                    text = if (isSocial || app.hasTimer) "Set Daily Limit" else "Disable Daily Limit",
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
                 Column {
                     Text(
-                        text = if (app.hasTimer) {
+                        text = if (isSocial) {
+                            "Are you sure you want to set a daily limit of ${tempTimerMinutes}m for ${app.label}? You can only set this limit once per day (1m - 15m). Default is 15m."
+                        } else if (app.hasTimer) {
                             "Are you sure you want to set a daily limit for ${app.label}? You can only change this limit once per day."
                         } else {
                             "Are you sure you want to disable the daily limit for ${app.label}? You cannot set it again today."
@@ -397,7 +404,7 @@ fun MainScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
 
-                    if (app.hasTimer) {
+                    if (isSocial || app.hasTimer) {
                         Spacer(modifier = Modifier.height(16.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -406,10 +413,10 @@ fun MainScreen(
                             Text(text = "Limit: ${tempTimerMinutes}m", style = MaterialTheme.typography.bodyMedium)
                         }
                         Slider(
-                            value = tempTimerMinutes.toFloat(),
-                            onValueChange = { tempTimerMinutes = it.toInt().coerceIn(5, 120) },
-                            valueRange = 5f..120f,
-                            steps = 22
+                            value = tempTimerMinutes.toFloat().coerceIn(minLimit.toFloat(), maxLimit.toFloat()),
+                            onValueChange = { tempTimerMinutes = it.toInt().coerceIn(minLimit, maxLimit) },
+                            valueRange = minLimit.toFloat()..maxLimit.toFloat(),
+                            steps = steps
                         )
                     }
                 }
@@ -417,7 +424,14 @@ fun MainScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        onAppTimerChange(app.packageName, if (app.hasTimer) tempTimerMinutes else null)
+                        val limitToSet = if (isSocial) {
+                            tempTimerMinutes.coerceIn(minLimit, maxLimit)
+                        } else if (app.hasTimer) {
+                            tempTimerMinutes.coerceIn(minLimit, maxLimit)
+                        } else {
+                            null
+                        }
+                        onAppTimerChange(app.packageName, limitToSet)
                         appToConfirmTimer = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -496,13 +510,63 @@ private fun BlockableAppRow(
                 )
             }
             Switch(
-                checked = app.isBlocked,
+                checked = app.isBlocked || app.isLimitedSocial,
                 onCheckedChange = { onTogglePackage(app.packageName, it) },
-                enabled = !isAlwaysBlocked
+                enabled = !isAlwaysBlocked && !app.isLimitedSocial
             )
         }
 
-        if (!isAlwaysBlocked) {
+        if (app.isLimitedSocial) {
+            Spacer(modifier = Modifier.height(4.dp))
+            val usedMinutes = (usageSeconds / 60).toInt()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Daily Limit: ${app.timerMinutes}m",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "Used today: ${usedMinutes}m / ${app.timerMinutes}m",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                )
+            }
+            Text(
+                text = "Allowed 1m to 15m. Can only be set once per day (default 15m). Pop-up shown on open.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (isTimerLocked) "Locked for today" else "Change limit (1m - 15m)",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Button(
+                    onClick = { onAppTimerChange(app.packageName, app.timerMinutes) },
+                    enabled = !isTimerLocked
+                ) {
+                    Text(if (isTimerLocked) "${app.timerMinutes}m (Locked)" else "Set Limit")
+                }
+            }
+            if (isTimerLocked) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Daily limit set today. Locked until tomorrow.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                )
+            }
+        } else if (!isAlwaysBlocked) {
             Spacer(modifier = Modifier.height(4.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -516,7 +580,7 @@ private fun BlockableAppRow(
                     Checkbox(
                         checked = app.hasTimer,
                         onCheckedChange = { checked ->
-                            onAppTimerChange(app.packageName, if (checked) 30 else null)
+                            onAppTimerChange(app.packageName, if (checked) 15 else null)
                         },
                         enabled = !isTimerLocked
                     )
@@ -543,10 +607,10 @@ private fun BlockableAppRow(
                         Slider(
                             value = app.timerMinutes.toFloat(),
                             onValueChange = {
-                                onAppTimerChange(app.packageName, it.toInt().coerceIn(5, 120))
+                                onAppTimerChange(app.packageName, it.toInt().coerceIn(1, 60))
                             },
-                            valueRange = 5f..120f,
-                            steps = 22,
+                            valueRange = 1f..60f,
+                            steps = 58,
                             enabled = !isTimerLocked
                         )
                     }

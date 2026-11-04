@@ -6,10 +6,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
+import com.maxproductivity.app.data.LIMITED_SOCIAL_PACKAGES
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,7 +41,7 @@ class YouTubeTimerService : Service() {
         super.onCreate()
         repository = MaxProductivityApp.get(this).preferencesRepository
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startServiceInForeground()
 
         serviceScope.launch {
             repository.preferencesFlow.collect { prefs ->
@@ -76,8 +79,20 @@ class YouTubeTimerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startServiceInForeground()
         return START_STICKY
+    }
+
+    private fun startServiceInForeground() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -105,6 +120,11 @@ class YouTubeTimerService : Service() {
                 if (!FocusAccessibilityService.isRunning()) continue
 
                 val state = YouTubeTrackingState.snapshot()
+                if (state.isNoticeActive) {
+                    // "Time is limited. Make it count." pop-up is active; do NOT count time
+                    continue
+                }
+
                 val fgPackage = state.foregroundPackage
 
                 if (
@@ -122,13 +142,13 @@ class YouTubeTimerService : Service() {
                         startActivity(
                             BlockOverlayActivity.createIntent(
                                 this@YouTubeTimerService,
-                                preferences.reminderText,
+                                getString(R.string.youtube_limit_reached),
                                 AppPreferencesRepository.YOUTUBE_PACKAGE,
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     }
                 } else if (fgPackage != null && fgPackage != AppPreferencesRepository.YOUTUBE_PACKAGE) {
-                    val limitMinutes = preferences.timerLimits[fgPackage]
+                    val limitMinutes = preferences.getEffectiveLimitMinutes(fgPackage)
                     if (limitMinutes != null && limitMinutes > 0) {
                         val currentUsage = localAppUsage[fgPackage] ?: 0L
                         if (currentUsage < limitMinutes * 60L) {
@@ -138,10 +158,15 @@ class YouTubeTimerService : Service() {
 
                             if (newUsage >= limitMinutes * 60L) {
                                 sendUserHome()
+                                val blockMessage = if (LIMITED_SOCIAL_PACKAGES.contains(fgPackage)) {
+                                    "Daily limit reached for this app (${limitMinutes}m)."
+                                } else {
+                                    preferences.reminderText
+                                }
                                 startActivity(
                                     BlockOverlayActivity.createIntent(
                                         this@YouTubeTimerService,
-                                        preferences.reminderText,
+                                        blockMessage,
                                         fgPackage,
                                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                 )
