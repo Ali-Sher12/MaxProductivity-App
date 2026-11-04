@@ -888,13 +888,8 @@ private fun PopUpsTab(
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onOpenOnboarding) {
-                    Text("Open permission setup")
-                }
-                TextButton(onClick = onRefreshPermissions) {
-                    Text("Refresh status")
-                }
+            Button(onClick = onOpenOnboarding) {
+                Text("Open permission setup")
             }
         }
     }
