@@ -71,12 +71,14 @@ fun AppRoot(
                 onExtremelyDistractingLimitMessageChange = viewModel::setExtremelyDistractingLimitMessage,
                 onMottoChange = viewModel::setMotto,
                 onBackgroundImageChange = viewModel::setBackgroundImageUri,
-                onBlockingStrategyChange = viewModel::setBlockingStrategy,
                 onRefreshPermissions = viewModel::refreshPermissions,
                 onOpenOnboarding = viewModel::showOnboarding,
                 onLock = viewModel::lock,
                 onChangePassword = viewModel::changePassword,
                 onClearPasswordError = viewModel::clearPasswordError,
+                onNightBlockChange = viewModel::setNightBlockEdApps,
+                onAddExtremelyDistracting = viewModel::addExtremelyDistractingApp,
+                onRemoveExtremelyDistracting = viewModel::removeExtremelyDistractingApp,
             )
         }
     }

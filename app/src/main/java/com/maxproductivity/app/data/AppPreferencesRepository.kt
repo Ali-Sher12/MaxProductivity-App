@@ -12,12 +12,13 @@ import com.maxproductivity.app.blocking.BlockingStrategy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.time.LocalDate
+import java.time.LocalTime
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
 
 /**
- * Extremely Distracting Apps: Twitter, Instagram, Reddit, Snapchat, TikTok, Discord.
- * These apps are always timed and can never be explicitly blocked.
+ * Built-in Extremely Distracting Apps. These can be fully blocked from the Block apps tab,
+ * but they cannot be removed from the ED list. If they are not blocked, a daily timer applies.
  */
 val EXTREMELY_DISTRACTING_PACKAGES = setOf(
     "com.instagram.android",
@@ -46,21 +47,55 @@ const val EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES = 1
 const val EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES = 20
 
 const val OTHER_APP_MIN_LIMIT_MINUTES = 1
-const val OTHER_APP_MAX_LIMIT_MINUTES = 30
+const val OTHER_APP_MAX_LIMIT_MINUTES = 60
+
+const val ED_NIGHT_BLOCK_START_HOUR = 22
+const val ED_NIGHT_BLOCK_END_HOUR = 10
+const val ED_NIGHT_BLOCK_MESSAGE = "Extremely Distracting Apps are blocked from 10:00 PM to 10:00 AM."
+
+/**
+ * Reminder milestones. A pop-up is shown only when a timer starts, when 5 minutes
+ * remain (for limits of at least 10 minutes), and when 1 minute remains (for limits
+ * of at least 5 minutes).
+ */
+const val TIMER_REMINDER_START = "start"
+const val TIMER_REMINDER_FIVE_MINUTES = "five_minutes"
+const val TIMER_REMINDER_ONE_MINUTE = "one_minute"
+
+fun reminderMilestoneKey(packageName: String, date: String, milestone: String): String =
+    "$packageName|$date|$milestone"
+
+/** Returns the milestone that was just crossed, or null when no pop-up is due. */
+fun dueTimerReminderMilestone(
+    limitMinutes: Int,
+    previousUsedSeconds: Long,
+    currentUsedSeconds: Long,
+): String? {
+    val limitSeconds = limitMinutes * 60L
+    val previousRemaining = (limitSeconds - previousUsedSeconds).coerceAtLeast(0L)
+    val currentRemaining = (limitSeconds - currentUsedSeconds).coerceAtLeast(0L)
+    return when {
+        previousUsedSeconds <= 0L -> TIMER_REMINDER_START
+        limitMinutes >= 10 && previousRemaining > 300L && currentRemaining <= 300L ->
+            TIMER_REMINDER_FIVE_MINUTES
+        limitMinutes >= 5 && previousRemaining > 60L && currentRemaining <= 60L ->
+            TIMER_REMINDER_ONE_MINUTE
+        else -> null
+    }
+}
 
 // Backwards-compatible names used by older code/tests.
 const val LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES = EXTREMELY_DISTRACTING_DEFAULT_LIMIT_MINUTES
 const val LIMITED_SOCIAL_MIN_LIMIT_MINUTES = EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES
 const val LIMITED_SOCIAL_MAX_LIMIT_MINUTES = EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES
 
-/**
- * Timers are intentionally measured against 90% of the nominal limit. The user sees the
- * nominal value everywhere; only the enforcement uses this factor.
- */
-const val TIMER_MEASUREMENT_NUMERATOR = 9L
-const val TIMER_MEASUREMENT_DENOMINATOR = 10L
-
 val ALWAYS_BLOCKED_PACKAGES: Set<String> = emptySet()
+
+fun isWithinEdNightBlockWindow(time: LocalTime = LocalTime.now()): Boolean {
+    val start = LocalTime.of(ED_NIGHT_BLOCK_START_HOUR, 0)
+    val end = LocalTime.of(ED_NIGHT_BLOCK_END_HOUR, 0)
+    return !time.isBefore(start) || time.isBefore(end)
+}
 
 data class AppPreferences(
     val blockedPackages: Set<String> = emptySet(),
@@ -78,8 +113,18 @@ data class AppPreferences(
     val blockingStrategy: BlockingStrategy = BlockingStrategy.ACCESSIBILITY,
     val passwordHash: String = "",
     val onboardingCompleted: Boolean = false,
+    val userExtremelyDistractingPackages: Set<String> = emptySet(),
+    val nightBlockEdApps: Boolean = false,
+    val reminderMilestones: Set<String> = emptySet(), // package|yyyy-MM-dd|milestone
 ) {
-    fun isExtremelyDistracting(packageName: String): Boolean = EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)
+    fun allExtremelyDistractingPackages(): Set<String> =
+        EXTREMELY_DISTRACTING_PACKAGES + userExtremelyDistractingPackages
+
+    fun isExtremelyDistracting(packageName: String): Boolean =
+        allExtremelyDistractingPackages().contains(packageName)
+
+    fun isBuiltInExtremelyDistracting(packageName: String): Boolean =
+        EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)
 
     /** The limit the user sees/configured. EXTREMELY_DISTRACTING apps fall back to 15 minutes. */
     fun getEffectiveLimitMinutes(packageName: String): Int? {
@@ -92,27 +137,30 @@ data class AppPreferences(
             ?.coerceIn(OTHER_APP_MIN_LIMIT_MINUTES, OTHER_APP_MAX_LIMIT_MINUTES)
     }
 
-    /** Hidden enforcement limit: 90% of the nominal limit. */
+    /** Timers use exactly the configured number of minutes of foreground time. */
     fun getEffectiveLimitSeconds(packageName: String): Long? {
         val minutes = getEffectiveLimitMinutes(packageName) ?: return null
-        return (minutes * 60L * TIMER_MEASUREMENT_NUMERATOR) / TIMER_MEASUREMENT_DENOMINATOR
+        return minutes * 60L
     }
 
     fun getUsageSeconds(packageName: String): Long = appUsageSeconds[packageName] ?: 0L
 
-    /**
-     * Usage shown to the user is scaled back up so it lines up with the nominal limit.
-     * This keeps the 90% enforcement factor invisible.
-     */
-    fun getDisplayedUsageSeconds(packageName: String): Long {
-        val real = getUsageSeconds(packageName)
-        return (real * TIMER_MEASUREMENT_DENOMINATOR) / TIMER_MEASUREMENT_NUMERATOR
+    /** The displayed usage is the real measured foreground usage. */
+    fun getDisplayedUsageSeconds(packageName: String): Long = getUsageSeconds(packageName)
+
+    fun hasShownReminder(
+        packageName: String,
+        milestone: String,
+        today: String = LocalDate.now().toString(),
+    ): Boolean = reminderMilestones.contains(reminderMilestoneKey(packageName, today, milestone))
+
+    fun hasActiveTimer(packageName: String): Boolean {
+        if (blockedPackages.contains(packageName)) return false
+        return isExtremelyDistracting(packageName) || (timerLimits[packageName] ?: 0) > 0
     }
 
-    fun hasActiveTimer(packageName: String): Boolean =
-        isExtremelyDistracting(packageName) || (timerLimits[packageName] ?: 0) > 0
-
     fun isTimerExpired(packageName: String): Boolean {
+        if (blockedPackages.contains(packageName)) return false
         val limitSeconds = getEffectiveLimitSeconds(packageName) ?: return false
         return getUsageSeconds(packageName) >= limitSeconds
     }
@@ -120,35 +168,47 @@ data class AppPreferences(
     fun isTimerLockedForToday(
         packageName: String,
         today: String = LocalDate.now().toString(),
-    ): Boolean = timerLastModifiedDates[packageName] == today
+    ): Boolean {
+        if (!isExtremelyDistracting(packageName)) return false
+        return timerLastModifiedDates[packageName] == today
+    }
+
+    fun isEdNightBlocked(
+        packageName: String,
+        time: LocalTime = LocalTime.now(),
+    ): Boolean = nightBlockEdApps && isExtremelyDistracting(packageName) && isWithinEdNightBlockWindow(time)
 }
 
 class AppPreferencesRepository(private val context: Context) {
 
     val preferencesFlow: Flow<AppPreferences> = context.dataStore.data.map { prefs ->
+        val userEdPackages = (prefs[KEY_USER_ED_PACKAGES] ?: emptySet()) - EXTREMELY_DISTRACTING_PACKAGES
+        val allEdPackages = EXTREMELY_DISTRACTING_PACKAGES + userEdPackages
         val rawTimerLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap()
         val mergedTimerLimits = rawTimerLimits
-            .filterKeys { !EXTREMELY_DISTRACTING_PACKAGES.contains(it) }
+            .filterKeys { !allEdPackages.contains(it) }
             .mapValues { (_, value) ->
                 value.coerceIn(OTHER_APP_MIN_LIMIT_MINUTES, OTHER_APP_MAX_LIMIT_MINUTES)
             }
             .toMutableMap()
-        for (pkg in EXTREMELY_DISTRACTING_PACKAGES) {
+        for (pkg in allEdPackages) {
             val existing = rawTimerLimits[pkg]
             mergedTimerLimits[pkg] = (existing ?: EXTREMELY_DISTRACTING_DEFAULT_LIMIT_MINUTES)
                 .coerceIn(EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES, EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES)
         }
 
+        val rawBlocked = prefs[KEY_BLOCKED_PACKAGES] ?: emptySet()
         AppPreferences(
-            blockedPackages = (prefs[KEY_BLOCKED_PACKAGES] ?: emptySet())
-                .filterNot {
-                    EXTREMELY_DISTRACTING_PACKAGES.contains(it) || mergedTimerLimits.containsKey(it)
+            blockedPackages = rawBlocked
+                .filterNot { pkg ->
+                    !allEdPackages.contains(pkg) && mergedTimerLimits.containsKey(pkg)
                 }
                 .toSet(),
             timerLimits = mergedTimerLimits,
             timerPriorBlockedPackages = (prefs[KEY_TIMER_PRIOR_BLOCKED] ?: emptySet()) +
-                (prefs[KEY_BLOCKED_PACKAGES] ?: emptySet())
-                    .filter { mergedTimerLimits.containsKey(it) && !EXTREMELY_DISTRACTING_PACKAGES.contains(it) },
+                rawBlocked.filter {
+                    mergedTimerLimits.containsKey(it) && !allEdPackages.contains(it)
+                },
             timerLastModifiedDates = (prefs[KEY_TIMER_LAST_MODIFIED] ?: emptySet()).toStringMap(),
             blockingEnabled = prefs[KEY_BLOCKING_ENABLED] ?: true,
             appUsageSeconds = (prefs[KEY_APP_USAGE_SECONDS] ?: emptySet()).toUsageMap(),
@@ -163,6 +223,9 @@ class AppPreferencesRepository(private val context: Context) {
             blockingStrategy = BlockingStrategy.fromName(prefs[KEY_BLOCKING_STRATEGY]),
             passwordHash = prefs[KEY_PASSWORD_HASH] ?: "",
             onboardingCompleted = prefs[KEY_ONBOARDING_COMPLETED] ?: false,
+            userExtremelyDistractingPackages = userEdPackages,
+            nightBlockEdApps = prefs[KEY_NIGHT_BLOCK_ED] ?: false,
+            reminderMilestones = prefs[KEY_REMINDER_MILESTONES] ?: emptySet(),
         )
     }
 
@@ -171,17 +234,19 @@ class AppPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setBlockedPackages(packages: Set<String>) {
-        context.dataStore.edit {
-            it[KEY_BLOCKED_PACKAGES] = packages
-                .filterNot { pkg -> EXTREMELY_DISTRACTING_PACKAGES.contains(pkg) }
-                .toSet()
+        context.dataStore.edit { prefs ->
+            val allEd = currentEdPackages(prefs)
+            val timerLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap()
+            prefs[KEY_BLOCKED_PACKAGES] = packages.filter { pkg ->
+                allEd.contains(pkg) || (timerLimits[pkg] ?: 0) <= 0
+            }.toSet()
         }
     }
 
     suspend fun setTimer(packageName: String, minutes: Int) {
         context.dataStore.edit { prefs ->
             val today = LocalDate.now().toString()
-            val isExtremelyDistracting = EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)
+            val isExtremelyDistracting = currentEdPackages(prefs).contains(packageName)
             val clamped = if (isExtremelyDistracting) {
                 minutes.coerceIn(EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES, EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES)
             } else {
@@ -193,32 +258,37 @@ class AppPreferencesRepository(private val context: Context) {
             prefs[KEY_TIMER_LIMITS] = currentLimits.toTimerSet()
 
             val currentBlocked = (prefs[KEY_BLOCKED_PACKAGES] ?: emptySet()).toMutableSet()
-            val priorBlocked = (prefs[KEY_TIMER_PRIOR_BLOCKED] ?: emptySet()).toMutableSet()
-            if (currentBlocked.contains(packageName)) {
-                priorBlocked.add(packageName)
-            } else {
-                priorBlocked.remove(packageName)
+            if (!isExtremelyDistracting) {
+                val priorBlocked = (prefs[KEY_TIMER_PRIOR_BLOCKED] ?: emptySet()).toMutableSet()
+                if (currentBlocked.contains(packageName)) {
+                    priorBlocked.add(packageName)
+                } else {
+                    priorBlocked.remove(packageName)
+                }
+                prefs[KEY_TIMER_PRIOR_BLOCKED] = priorBlocked
+                currentBlocked.remove(packageName)
+                prefs[KEY_BLOCKED_PACKAGES] = currentBlocked
             }
-            prefs[KEY_TIMER_PRIOR_BLOCKED] = priorBlocked
-
-            // A timed app is not an explicitly blocked app. EXTREMELY_DISTRACTING apps are never blocked.
-            currentBlocked.remove(packageName)
-            prefs[KEY_BLOCKED_PACKAGES] = currentBlocked
 
             val currentModified = (prefs[KEY_TIMER_LAST_MODIFIED] ?: emptySet()).toStringMap().toMutableMap()
             currentModified[packageName] = today
             prefs[KEY_TIMER_LAST_MODIFIED] = currentModified.toStringSet()
+
+            // A changed timer gets fresh start/5-minute/1-minute reminders.
+            prefs[KEY_REMINDER_MILESTONES] =
+                (prefs[KEY_REMINDER_MILESTONES] ?: emptySet()).withoutPackageReminders(packageName)
         }
     }
 
     suspend fun removeTimer(packageName: String) {
-        if (EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)) return
         context.dataStore.edit { prefs ->
-            val today = LocalDate.now().toString()
+            if (currentEdPackages(prefs).contains(packageName)) return@edit
 
             val currentLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap().toMutableMap()
             currentLimits.remove(packageName)
             prefs[KEY_TIMER_LIMITS] = currentLimits.toTimerSet()
+            prefs[KEY_REMINDER_MILESTONES] =
+                (prefs[KEY_REMINDER_MILESTONES] ?: emptySet()).withoutPackageReminders(packageName)
 
             val priorBlocked = (prefs[KEY_TIMER_PRIOR_BLOCKED] ?: emptySet()).toMutableSet()
             val wasBlockedBeforeTimer = priorBlocked.remove(packageName)
@@ -231,10 +301,58 @@ class AppPreferencesRepository(private val context: Context) {
                 currentBlocked.remove(packageName)
             }
             prefs[KEY_BLOCKED_PACKAGES] = currentBlocked
+        }
+    }
 
-            val currentModified = (prefs[KEY_TIMER_LAST_MODIFIED] ?: emptySet()).toStringMap().toMutableMap()
-            currentModified[packageName] = today
-            prefs[KEY_TIMER_LAST_MODIFIED] = currentModified.toStringSet()
+    suspend fun setNightBlockEdApps(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_NIGHT_BLOCK_ED] = enabled }
+    }
+
+    suspend fun markReminderMilestoneShown(
+        packageName: String,
+        milestone: String,
+        today: String = LocalDate.now().toString(),
+    ) {
+        context.dataStore.edit { prefs ->
+            val shown = (prefs[KEY_REMINDER_MILESTONES] ?: emptySet()).toMutableSet()
+            shown.add(reminderMilestoneKey(packageName, today, milestone))
+            prefs[KEY_REMINDER_MILESTONES] = shown
+        }
+    }
+
+    suspend fun addUserExtremelyDistractingPackage(packageName: String) {
+        if (packageName.isBlank() || EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)) return
+        context.dataStore.edit { prefs ->
+            val userEd = (prefs[KEY_USER_ED_PACKAGES] ?: emptySet()).toMutableSet()
+            userEd.add(packageName)
+            prefs[KEY_USER_ED_PACKAGES] = userEd
+
+            val currentLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap().toMutableMap()
+            currentLimits[packageName] = (currentLimits[packageName] ?: EXTREMELY_DISTRACTING_DEFAULT_LIMIT_MINUTES)
+                .coerceIn(EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES, EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES)
+            prefs[KEY_TIMER_LIMITS] = currentLimits.toTimerSet()
+            prefs[KEY_REMINDER_MILESTONES] =
+                (prefs[KEY_REMINDER_MILESTONES] ?: emptySet()).withoutPackageReminders(packageName)
+        }
+    }
+
+    suspend fun removeUserExtremelyDistractingPackage(packageName: String) {
+        if (EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)) return
+        context.dataStore.edit { prefs ->
+            val userEd = (prefs[KEY_USER_ED_PACKAGES] ?: emptySet()).toMutableSet()
+            userEd.remove(packageName)
+            prefs[KEY_USER_ED_PACKAGES] = userEd
+
+            val currentLimits = (prefs[KEY_TIMER_LIMITS] ?: emptySet()).toTimerMap().toMutableMap()
+            currentLimits[packageName]?.let { minutes ->
+                currentLimits[packageName] = minutes.coerceIn(
+                    OTHER_APP_MIN_LIMIT_MINUTES,
+                    OTHER_APP_MAX_LIMIT_MINUTES,
+                )
+            }
+            prefs[KEY_TIMER_LIMITS] = currentLimits.toTimerSet()
+            prefs[KEY_REMINDER_MILESTONES] =
+                (prefs[KEY_REMINDER_MILESTONES] ?: emptySet()).withoutPackageReminders(packageName)
         }
     }
 
@@ -285,6 +403,7 @@ class AppPreferencesRepository(private val context: Context) {
             if (storedAppDate != today) {
                 prefs[KEY_APP_USAGE_SECONDS] = emptySet()
                 prefs[KEY_APP_USAGE_DATE] = today
+                prefs[KEY_REMINDER_MILESTONES] = emptySet()
             }
         }
     }
@@ -307,6 +426,18 @@ class AppPreferencesRepository(private val context: Context) {
         private val KEY_BLOCKING_STRATEGY = stringPreferencesKey("blocking_strategy")
         private val KEY_PASSWORD_HASH = stringPreferencesKey("password_hash")
         private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        private val KEY_USER_ED_PACKAGES = stringSetPreferencesKey("user_extremely_distracting_packages")
+        private val KEY_NIGHT_BLOCK_ED = booleanPreferencesKey("night_block_ed_apps")
+        private val KEY_REMINDER_MILESTONES = stringSetPreferencesKey("reminder_milestones")
+
+        private fun currentEdPackages(prefs: Preferences): Set<String> {
+            return EXTREMELY_DISTRACTING_PACKAGES + (prefs[KEY_USER_ED_PACKAGES] ?: emptySet())
+        }
+
+        private fun Set<String>.withoutPackageReminders(packageName: String): Set<String> {
+            val prefix = "$packageName|"
+            return filterNot { it.startsWith(prefix) }.toSet()
+        }
 
         private fun Set<String>.toStringMap(): Map<String, String> {
             return associate {

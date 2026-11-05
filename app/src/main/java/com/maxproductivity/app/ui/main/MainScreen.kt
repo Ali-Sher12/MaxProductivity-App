@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,9 +22,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -33,8 +34,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -64,8 +65,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
-import com.maxproductivity.app.blocking.BlockingStrategy
 import com.maxproductivity.app.data.LIMITED_SOCIAL_DEFAULT_LIMIT_MINUTES
+import com.maxproductivity.app.ui.components.CommitmentConfirmDialog
 import com.maxproductivity.app.data.LIMITED_SOCIAL_MAX_LIMIT_MINUTES
 import com.maxproductivity.app.data.LIMITED_SOCIAL_MIN_LIMIT_MINUTES
 import com.maxproductivity.app.data.OTHER_APP_MAX_LIMIT_MINUTES
@@ -82,44 +83,52 @@ fun MainScreen(
     onExtremelyDistractingLimitMessageChange: (String) -> Unit,
     onMottoChange: (String) -> Unit,
     onBackgroundImageChange: (String) -> Unit,
-    onBlockingStrategyChange: (BlockingStrategy) -> Unit,
     onRefreshPermissions: () -> Unit,
     onOpenOnboarding: () -> Unit,
     onLock: () -> Unit,
     onChangePassword: (String, String) -> Unit,
     onClearPasswordError: () -> Unit,
+    onNightBlockChange: (Boolean) -> Unit,
+    onAddExtremelyDistracting: (String) -> Unit,
+    onRemoveExtremelyDistracting: (String) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             MainTopBar(
                 motto = uiState.preferences.motto,
+                showSettings = showSettings,
                 onOpenOnboarding = onOpenOnboarding,
                 onLock = onLock,
+                onOpenSettings = { showSettings = true },
+                onCloseSettings = { showSettings = false },
             )
         },
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Outlined.Block, contentDescription = null) },
-                    label = { Text("Block apps") },
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Outlined.Timer, contentDescription = null) },
-                    label = { Text("Timers") },
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                    label = { Text("Pop-ups") },
-                )
+            if (!showSettings) {
+                NavigationBar {
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        icon = { Icon(Icons.Outlined.Block, contentDescription = null) },
+                        label = { Text("Block apps") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        icon = { Icon(Icons.Outlined.Timer, contentDescription = null) },
+                        label = { Text("Timers") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                        label = { Text("Pop-ups") },
+                    )
+                }
             }
         },
     ) { innerPadding ->
@@ -128,31 +137,39 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            when (selectedTab) {
-                0 -> BlockAppsTab(
+            if (showSettings) {
+                SettingsScreen(
                     uiState = uiState,
-                    onTogglePackage = onTogglePackage,
+                    onNightBlockChange = onNightBlockChange,
+                    onAddExtremelyDistracting = onAddExtremelyDistracting,
+                    onRemoveExtremelyDistracting = onRemoveExtremelyDistracting,
                 )
+            } else {
+                when (selectedTab) {
+                    0 -> BlockAppsTab(
+                        uiState = uiState,
+                        onTogglePackage = onTogglePackage,
+                    )
 
-                1 -> TimersTab(
-                    uiState = uiState,
-                    onAppTimerChange = onAppTimerChange,
-                    onRemoveTimer = onRemoveTimer,
-                )
+                    1 -> TimersTab(
+                        uiState = uiState,
+                        onAppTimerChange = onAppTimerChange,
+                        onRemoveTimer = onRemoveTimer,
+                    )
 
-                else -> PopUpsTab(
-                    uiState = uiState,
-                    onReminderTextChange = onReminderTextChange,
-                    onTimerLimitMessageChange = onTimerLimitMessageChange,
-                    onExtremelyDistractingLimitMessageChange = onExtremelyDistractingLimitMessageChange,
-                    onMottoChange = onMottoChange,
-                    onBackgroundImageChange = onBackgroundImageChange,
-                    onBlockingStrategyChange = onBlockingStrategyChange,
-                    onRefreshPermissions = onRefreshPermissions,
-                    onOpenOnboarding = onOpenOnboarding,
-                    onChangePassword = onChangePassword,
-                    onClearPasswordError = onClearPasswordError,
-                )
+                    else -> PopUpsTab(
+                        uiState = uiState,
+                        onReminderTextChange = onReminderTextChange,
+                        onTimerLimitMessageChange = onTimerLimitMessageChange,
+                        onExtremelyDistractingLimitMessageChange = onExtremelyDistractingLimitMessageChange,
+                        onMottoChange = onMottoChange,
+                        onBackgroundImageChange = onBackgroundImageChange,
+                        onRefreshPermissions = onRefreshPermissions,
+                        onOpenOnboarding = onOpenOnboarding,
+                        onChangePassword = onChangePassword,
+                        onClearPasswordError = onClearPasswordError,
+                    )
+                }
             }
         }
     }
@@ -161,8 +178,11 @@ fun MainScreen(
 @Composable
 private fun MainTopBar(
     motto: String,
+    showSettings: Boolean,
     onOpenOnboarding: () -> Unit,
     onLock: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onCloseSettings: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
@@ -172,23 +192,33 @@ private fun MainTopBar(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (showSettings) {
+                IconButton(onClick = onCloseSettings) {
+                    Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
+                }
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "LongTerm",
+                    text = if (showSettings) "Settings" else "LongTerm",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = motto,
+                    text = if (showSettings) "Night block and Extremely Distracting Apps" else motto,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
             }
-            TextButton(onClick = onOpenOnboarding) {
-                Text("Permissions")
-            }
-            TextButton(onClick = onLock) {
-                Text("Lock")
+            if (!showSettings) {
+                TextButton(onClick = onOpenOnboarding) {
+                    Text("Permissions")
+                }
+                TextButton(onClick = onLock) {
+                    Text("Lock")
+                }
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                }
             }
         }
     }
@@ -204,11 +234,13 @@ private fun BlockAppsTab(
     onTogglePackage: (String, Boolean) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val apps = uiState.blockableApps.filter { !it.isExtremelyDistracting }
-    val filtered = apps.filter {
+    var pendingUnblock by remember { mutableStateOf<BlockableApp?>(null) }
+    val filtered = uiState.blockableApps.filter {
         it.label.contains(query, ignoreCase = true) ||
             it.packageName.contains(query, ignoreCase = true)
     }
+    val edApps = filtered.filter { it.isExtremelyDistracting }
+    val otherApps = filtered.filter { !it.isExtremelyDistracting }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -228,21 +260,62 @@ private fun BlockAppsTab(
 
         item {
             Text(
-                text = "Check an app to block it. Extremely Distracting Apps are managed in the Timers tab and can never be unblocked.",
+                text = "Check an app to block it until you uncheck it. Unchecking requires the commitment phrase. Apps that hit a daily timer stay locked until tomorrow. Unchecked Extremely Distracting Apps use their timer instead.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             )
         }
 
-        if (filtered.isEmpty()) {
+        if (edApps.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Extremely Distracting Apps",
+                    subtitle = "Block completely, or leave unchecked to use the daily timer.",
+                )
+            }
+            items(edApps, key = { "block-ed-${it.packageName}" }) { app ->
+                BlockAppRow(
+                    app = app,
+                    onTogglePackage = onTogglePackage,
+                    onRequestUnblock = { pendingUnblock = app },
+                )
+            }
+        }
+
+        if (otherApps.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = if (edApps.isEmpty()) "Apps" else "Other apps",
+                    subtitle = "Timed apps are managed in the Timers tab until their limit expires.",
+                )
+            }
+            items(otherApps, key = { "block-other-${it.packageName}" }) { app ->
+                BlockAppRow(
+                    app = app,
+                    onTogglePackage = onTogglePackage,
+                    onRequestUnblock = { pendingUnblock = app },
+                )
+            }
+        }
+
+        if (edApps.isEmpty() && otherApps.isEmpty()) {
             item {
                 EmptyState("No apps found.")
             }
-        } else {
-            items(filtered, key = { it.packageName }) { app ->
-                BlockAppRow(app = app, onTogglePackage = onTogglePackage)
-            }
         }
+    }
+
+    val unblockApp = pendingUnblock
+    if (unblockApp != null) {
+        CommitmentConfirmDialog(
+            title = "Unblock ${unblockApp.label}",
+            description = "This app stays blocked until you confirm here. Timer-expired apps cannot be unblocked until tomorrow.",
+            onDismiss = { pendingUnblock = null },
+            onConfirmed = {
+                onTogglePackage(unblockApp.packageName, false)
+                pendingUnblock = null
+            },
+        )
     }
 }
 
@@ -250,18 +323,21 @@ private fun BlockAppsTab(
 private fun BlockAppRow(
     app: BlockableApp,
     onTogglePackage: (String, Boolean) -> Unit,
+    onRequestUnblock: () -> Unit,
 ) {
-    val enabled = !app.isExtremelyDistracting && !app.hasTimer && !app.isTimerExpired
+    val timerManaged = !app.isExtremelyDistracting && app.hasTimer
+    val enabled = !app.isTimerExpired && !timerManaged
     val checked = app.isBlocked || app.isTimerExpired
     val status = when {
         app.isTimerExpired -> "Daily limit reached — locked until tomorrow"
-        app.hasTimer -> "Timer active: ${app.timerMinutes}m — manage in Timers"
-        app.isBlocked -> "Blocked"
+        timerManaged -> "Timer active: ${app.timerMinutes}m — manage in Timers"
+        app.isBlocked -> "Blocked until you unblock it"
+        app.isExtremelyDistracting -> "Allowed • ${app.timerMinutes}m daily timer"
         else -> "Allowed"
     }
     val statusColor = when {
         app.isTimerExpired -> MaterialTheme.colorScheme.error.copy(alpha = 0.9f)
-        app.hasTimer -> MaterialTheme.colorScheme.primary
+        timerManaged -> MaterialTheme.colorScheme.primary
         app.isBlocked -> MaterialTheme.colorScheme.error.copy(alpha = 0.9f)
         else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     }
@@ -269,7 +345,7 @@ private fun BlockAppRow(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(if (app.hasTimer || app.isTimerExpired) 0.62f else 1f),
+            .alpha(if (timerManaged || app.isTimerExpired) 0.62f else 1f),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
         ),
@@ -298,7 +374,13 @@ private fun BlockAppRow(
             Spacer(modifier = Modifier.width(12.dp))
             Checkbox(
                 checked = checked,
-                onCheckedChange = { onTogglePackage(app.packageName, it) },
+                onCheckedChange = { checkedNow ->
+                    if (!checkedNow && app.isBlocked) {
+                        onRequestUnblock()
+                    } else {
+                        onTogglePackage(app.packageName, checkedNow)
+                    }
+                },
                 enabled = enabled,
             )
         }
@@ -317,6 +399,8 @@ private fun TimersTab(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var dialogApp by remember { mutableStateOf<BlockableApp?>(null) }
+    var pendingTimerChange by remember { mutableStateOf<BlockableApp?>(null) }
+    var pendingTimerRemove by remember { mutableStateOf<BlockableApp?>(null) }
 
     val filteredApps = uiState.blockableApps.filter {
         query.isBlank() || it.label.contains(query, ignoreCase = true)
@@ -333,7 +417,7 @@ private fun TimersTab(
         item {
             InfoCard(
                 title = "Daily timers",
-                text = "A timer can be set or changed once per day. The limit carries over until you change it. Blocked apps must be unblocked before a timer can be set.",
+                text = "Extremely Distracting App timers can be changed once per day (1–20m, default 15m). Other app timers are 1–60m and stay in place across days until you change or remove them. Changing or removing a non-ED timer requires the commitment phrase. Apps that hit their limit stay blocked until tomorrow. Blocked apps must be unblocked before a timer can be set.",
             )
         }
 
@@ -352,7 +436,7 @@ private fun TimersTab(
             item {
                 SectionHeader(
                     title = "Extremely Distracting Apps",
-                    subtitle = "Always timed (1–20m, default 15m). Cannot be unblocked.",
+                    subtitle = "Always timed (1–20m, default 15m) unless fully blocked in Block apps.",
                 )
             }
             items(extremelyDistractingApps, key = { "distracting-${it.packageName}" }) { app ->
@@ -370,8 +454,10 @@ private fun TimersTab(
             items(otherAppsWithTimer, key = { "active-${it.packageName}" }) { app ->
                 OtherTimerCard(
                     app = app,
-                    onSetTimer = { dialogApp = app },
-                    onRemoveTimer = { onRemoveTimer(app.packageName) },
+                    onSetTimer = {
+                        if (app.hasTimer) pendingTimerChange = app else dialogApp = app
+                    },
+                    onRemoveTimer = { pendingTimerRemove = app },
                 )
             }
         }
@@ -380,14 +466,14 @@ private fun TimersTab(
             item {
                 SectionHeader(
                     title = if (otherAppsWithTimer.isEmpty()) "Other Apps" else "Available Apps",
-                    subtitle = "Set daily limits (1–30m).",
+                    subtitle = "Set daily limits (1–60m). Limits continue until changed or removed.",
                 )
             }
             items(otherAppsWithoutTimer, key = { "available-${it.packageName}" }) { app ->
                 OtherTimerCard(
                     app = app,
                     onSetTimer = { dialogApp = app },
-                    onRemoveTimer = { onRemoveTimer(app.packageName) },
+                    onRemoveTimer = { pendingTimerRemove = app },
                 )
             }
         }
@@ -410,6 +496,32 @@ private fun TimersTab(
             },
         )
     }
+
+    val changeApp = pendingTimerChange
+    if (changeApp != null) {
+        CommitmentConfirmDialog(
+            title = "Change timer for ${changeApp.label}",
+            description = "This timer stays in place across days until you change or remove it.",
+            onDismiss = { pendingTimerChange = null },
+            onConfirmed = {
+                dialogApp = changeApp
+                pendingTimerChange = null
+            },
+        )
+    }
+
+    val removeApp = pendingTimerRemove
+    if (removeApp != null) {
+        CommitmentConfirmDialog(
+            title = "Remove timer for ${removeApp.label}",
+            description = "After this, the app will no longer have a daily limit unless you set one again.",
+            onDismiss = { pendingTimerRemove = null },
+            onConfirmed = {
+                onRemoveTimer(removeApp.packageName)
+                pendingTimerRemove = null
+            },
+        )
+    }
 }
 
 @Composable
@@ -421,6 +533,7 @@ private fun ExtremelyDistractingTimerCard(
     val remainingMinutes = (app.timerMinutes - usedMinutes).coerceAtLeast(0)
     val locked = app.isTimerLockedForToday
     val expired = app.isTimerExpired
+    val blocked = app.isBlocked
     val progress = if (app.timerMinutes > 0) {
         (usedMinutes.toFloat() / app.timerMinutes.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -428,7 +541,7 @@ private fun ExtremelyDistractingTimerCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(if (expired) 0.7f else 1f),
+            .alpha(if (expired || blocked) 0.7f else 1f),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
         ),
@@ -465,35 +578,43 @@ private fun ExtremelyDistractingTimerCard(
                 }
             }
 
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = if (expired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
+            if (blocked) {
+                Text(
+                    text = "Fully blocked in Block apps. Unblock it there to use the daily timer.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f),
+                )
+            } else {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (expired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = "Used: ${usedMinutes}m",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
-                Text(
-                    text = if (expired) "Limit reached" else "${remainingMinutes}m remaining",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
-                    color = if (expired) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
-                    },
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Used: ${usedMinutes}m",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                    Text(
+                        text = if (expired) "Limit reached" else "${remainingMinutes}m remaining",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = if (expired) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                        },
+                    )
+                }
             }
 
             Row(
@@ -503,6 +624,7 @@ private fun ExtremelyDistractingTimerCard(
             ) {
                 Text(
                     text = when {
+                        blocked -> "Timer paused while blocked"
                         expired -> "Locked until tomorrow"
                         locked -> "Changed today (locked)"
                         else -> "Can change once today"
@@ -517,7 +639,7 @@ private fun ExtremelyDistractingTimerCard(
                 )
                 Button(
                     onClick = onSetTimer,
-                    enabled = !locked && !expired,
+                    enabled = !locked && !expired && !blocked,
                     shape = RoundedCornerShape(10.dp),
                 ) {
                     Text(if (locked) "Locked" else "Set Timer")
@@ -535,7 +657,6 @@ private fun OtherTimerCard(
 ) {
     val usedMinutes = (app.displayedUsageSeconds / 60).toInt()
     val remainingMinutes = (app.timerMinutes - usedMinutes).coerceAtLeast(0)
-    val locked = app.isTimerLockedForToday
     val expired = app.isTimerExpired
     val blocked = app.isBlocked
     val progress = if (app.hasTimer && app.timerMinutes > 0) {
@@ -630,8 +751,7 @@ private fun OtherTimerCard(
                     Text(
                         text = when {
                             expired -> "Locked until tomorrow"
-                            locked -> "Changed today (locked)"
-                            else -> "Range 1–30m"
+                            else -> "Range 1–60m • continues until changed"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (expired) {
@@ -645,14 +765,12 @@ private fun OtherTimerCard(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = onSetTimer,
-                                enabled = !locked,
                                 shape = RoundedCornerShape(10.dp),
                             ) {
                                 Text("Change")
                             }
                             OutlinedButton(
                                 onClick = onRemoveTimer,
-                                enabled = !locked,
                                 shape = RoundedCornerShape(10.dp),
                             ) {
                                 Text("Remove")
@@ -667,14 +785,14 @@ private fun OtherTimerCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = if (locked) "Timer removed today (locked)" else "No timer set • Range 1–30m",
+                        text = "No timer set • Range 1–60m",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f),
                     )
                     Button(
                         onClick = onSetTimer,
-                        enabled = !locked,
+                        enabled = !blocked,
                         shape = RoundedCornerShape(10.dp),
                     ) {
                         Text("Set Timer")
@@ -766,7 +884,6 @@ private fun PopUpsTab(
     onExtremelyDistractingLimitMessageChange: (String) -> Unit,
     onMottoChange: (String) -> Unit,
     onBackgroundImageChange: (String) -> Unit,
-    onBlockingStrategyChange: (BlockingStrategy) -> Unit,
     onRefreshPermissions: () -> Unit,
     onOpenOnboarding: () -> Unit,
     onChangePassword: (String, String) -> Unit,
@@ -824,38 +941,6 @@ private fun PopUpsTab(
                 text = "Shorts are always blocked while YouTube is open. This cannot be turned off.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-            )
-        }
-
-        SettingsCard(title = "Blocking strategy") {
-            Text(
-                text = if (uiState.isDeviceOwner) {
-                    "Device Owner mode is active. Zero-flash blocking is available."
-                } else {
-                    "Accessibility mode is used by default. Enable Device Owner via ADB for zero-flash blocking."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = uiState.preferences.blockingStrategy == BlockingStrategy.ACCESSIBILITY,
-                    onClick = { onBlockingStrategyChange(BlockingStrategy.ACCESSIBILITY) },
-                    label = { Text("Accessibility") },
-                )
-                FilterChip(
-                    selected = uiState.preferences.blockingStrategy == BlockingStrategy.DEVICE_OWNER,
-                    onClick = { onBlockingStrategyChange(BlockingStrategy.DEVICE_OWNER) },
-                    label = { Text("Device Owner") },
-                    enabled = uiState.isDeviceOwner,
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "ADB: adb shell dpm set-device-owner com.maxproductivity.app/com.maxproductivity.app.receiver.MyDeviceAdminReceiver",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             )
         }
 

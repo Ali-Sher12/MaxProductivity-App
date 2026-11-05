@@ -56,6 +56,7 @@ data class BlockableApp(
     val packageName: String,
     val label: String,
     val isExtremelyDistracting: Boolean,
+    val isBuiltInExtremelyDistracting: Boolean,
     val isBlocked: Boolean,
     val hasTimer: Boolean,
     val timerMinutes: Int,
@@ -92,8 +93,15 @@ class MainViewModel(
     init {
         viewModelScope.launch {
             repository.preferencesFlow.collect { prefs ->
-                val allApps = getBaseApps().map { entry ->
-                    val isExtremelyDistracting = EXTREMELY_DISTRACTING_PACKAGES.contains(entry.packageName)
+                val baseApps = getBaseApps()
+                val knownPackages = baseApps.map { it.packageName }.toSet()
+                val extraEdApps = prefs.userExtremelyDistractingPackages
+                    .filter { it !in knownPackages && it != app.packageName }
+                    .map { pkg ->
+                        InstalledApp(packageName = pkg, label = fallbackLabels[pkg] ?: pkg)
+                    }
+                val allApps = (baseApps + extraEdApps).map { entry ->
+                    val isExtremelyDistracting = prefs.isExtremelyDistracting(entry.packageName)
                     val hasTimer = prefs.hasActiveTimer(entry.packageName)
                     val limitMinutes = prefs.getEffectiveLimitMinutes(entry.packageName)
                     val isExpired = hasTimer && prefs.isTimerExpired(entry.packageName)
@@ -101,6 +109,7 @@ class MainViewModel(
                         packageName = entry.packageName,
                         label = entry.label,
                         isExtremelyDistracting = isExtremelyDistracting,
+                        isBuiltInExtremelyDistracting = prefs.isBuiltInExtremelyDistracting(entry.packageName),
                         isBlocked = prefs.blockedPackages.contains(entry.packageName),
                         hasTimer = hasTimer,
                         timerMinutes = limitMinutes ?: 0,
@@ -212,7 +221,7 @@ class MainViewModel(
 
         // Extremely Distracting Apps are always shown so their default/configured limits
         // are visible, even if the app is not installed on this device.
-        val allPackages = (installed.keys + targetSocialPackages)
+        val allPackages = (installed.keys + EXTREMELY_DISTRACTING_PACKAGES + targetSocialPackages)
             .filter {
                 if (it == myPackageName) return@filter false
                 if (it == "com.ss.android.ugc.trill" || it == "com.zhiliaoapp.musically" || it == "com.zhiliaoapp.musically.go") {
@@ -349,9 +358,8 @@ class MainViewModel(
 
     fun toggleBlockedPackage(packageName: String, blocked: Boolean) {
         val appState = _uiState.value.blockableApps.find { it.packageName == packageName } ?: return
-        if (appState.isExtremelyDistracting) return
-        if (blocked && (appState.hasTimer || appState.isTimerExpired)) return
-        if (!blocked && appState.isTimerExpired) return
+        if (appState.isTimerExpired) return
+        if (!appState.isExtremelyDistracting && appState.hasTimer) return
 
         viewModelScope.launch {
             val current = _uiState.value.preferences.blockedPackages
@@ -364,7 +372,7 @@ class MainViewModel(
         val appState = _uiState.value.blockableApps.find { it.packageName == packageName } ?: return
         if (appState.isBlocked) return
         if (appState.isTimerExpired) return
-        if (appState.isTimerLockedForToday) return
+        if (appState.isExtremelyDistracting && appState.isTimerLockedForToday) return
 
         val clamped = if (appState.isExtremelyDistracting) {
             minutes.coerceIn(EXTREMELY_DISTRACTING_MIN_LIMIT_MINUTES, EXTREMELY_DISTRACTING_MAX_LIMIT_MINUTES)
@@ -378,8 +386,21 @@ class MainViewModel(
         val appState = _uiState.value.blockableApps.find { it.packageName == packageName } ?: return
         if (appState.isExtremelyDistracting) return
         if (appState.isTimerExpired) return
-        if (appState.isTimerLockedForToday) return
         viewModelScope.launch { repository.removeTimer(packageName) }
+    }
+
+    fun setNightBlockEdApps(enabled: Boolean) {
+        viewModelScope.launch { repository.setNightBlockEdApps(enabled) }
+    }
+
+    fun addExtremelyDistractingApp(packageName: String) {
+        if (packageName.isBlank() || packageName == app.packageName) return
+        viewModelScope.launch { repository.addUserExtremelyDistractingPackage(packageName) }
+    }
+
+    fun removeExtremelyDistractingApp(packageName: String) {
+        if (EXTREMELY_DISTRACTING_PACKAGES.contains(packageName)) return
+        viewModelScope.launch { repository.removeUserExtremelyDistractingPackage(packageName) }
     }
 
     fun setReminderText(text: String) {

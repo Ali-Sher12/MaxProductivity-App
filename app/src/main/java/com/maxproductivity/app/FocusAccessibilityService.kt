@@ -9,7 +9,7 @@ import com.maxproductivity.app.blocking.AppSuspensionManager
 import com.maxproductivity.app.blocking.BlockingStrategy
 import com.maxproductivity.app.blocking.DeviceOwnerSuspendStrategy
 import com.maxproductivity.app.data.ALWAYS_BLOCKED_PACKAGES
-import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_PACKAGES
+import com.maxproductivity.app.data.ED_NIGHT_BLOCK_MESSAGE
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
 import kotlinx.coroutines.CoroutineScope
@@ -85,6 +85,11 @@ class FocusAccessibilityService : AccessibilityService() {
                 return
             }
 
+            if (preferences.isEdNightBlocked(packageName)) {
+                blockYouTube(ED_NIGHT_BLOCK_MESSAGE)
+                return
+            }
+
             handleYouTubeBlocking()
             return
         }
@@ -106,9 +111,14 @@ class FocusAccessibilityService : AccessibilityService() {
             acknowledgedPackageSession = null
         }
 
-        // Apps with an active timer (Extremely Distracting apps or user-configured timed apps)
+        if (preferences.isEdNightBlocked(packageName)) {
+            blockApp(packageName, ED_NIGHT_BLOCK_MESSAGE)
+            return
+        }
+
+        // Apps with an active timer (Extremely Distracting apps or user-configured timed apps).
+        // Time-limit pop-ups are scheduled by YouTubeTimerService at the exact milestones.
         if (preferences.hasActiveTimer(packageName)) {
-            val limitMinutes = preferences.getEffectiveLimitMinutes(packageName) ?: 15
             if (preferences.isTimerExpired(packageName)) {
                 val message = if (preferences.isExtremelyDistracting(packageName)) {
                     preferences.extremelyDistractingLimitMessage
@@ -116,15 +126,6 @@ class FocusAccessibilityService : AccessibilityService() {
                     preferences.timerLimitMessage
                 }
                 blockApp(packageName, message)
-                return
-            }
-
-            if (acknowledgedPackageSession != packageName) {
-                acknowledgedPackageSession = packageName
-                val displayedUsedSeconds = preferences.getDisplayedUsageSeconds(packageName)
-                val remainingSeconds = maxOf(1L, limitMinutes * 60L - displayedUsedSeconds)
-                startActivity(TimeNoticeActivity.createIntent(this, packageName, remainingSeconds, limitMinutes))
-                return
             }
             return
         }
@@ -175,6 +176,11 @@ class FocusAccessibilityService : AccessibilityService() {
     }
 
     private fun handleYouTubeBlocking() {
+        if (preferences.isEdNightBlocked(AppPreferencesRepository.YOUTUBE_PACKAGE)) {
+            blockYouTube(ED_NIGHT_BLOCK_MESSAGE)
+            return
+        }
+
         // Explicitly blocked YouTube is blocked immediately, regardless of timers.
         if (preferences.blockedPackages.contains(AppPreferencesRepository.YOUTUBE_PACKAGE)) {
             blockYouTube(preferences.reminderText)
@@ -184,18 +190,6 @@ class FocusAccessibilityService : AccessibilityService() {
         // A timed YouTube app is blocked once its daily limit has been consumed.
         if (preferences.isTimerExpired(AppPreferencesRepository.YOUTUBE_PACKAGE) || YouTubeTrackingState.isYouTubeLimitReached) {
             blockYouTube(preferences.timerLimitMessage)
-            return
-        }
-
-        if (preferences.hasActiveTimer(AppPreferencesRepository.YOUTUBE_PACKAGE) &&
-            acknowledgedPackageSession != AppPreferencesRepository.YOUTUBE_PACKAGE
-        ) {
-            acknowledgedPackageSession = AppPreferencesRepository.YOUTUBE_PACKAGE
-            val limitMinutes = preferences.getEffectiveLimitMinutes(AppPreferencesRepository.YOUTUBE_PACKAGE) ?: 15
-            val displayedUsedSeconds = preferences.getDisplayedUsageSeconds(AppPreferencesRepository.YOUTUBE_PACKAGE)
-            val remainingSeconds = maxOf(1L, limitMinutes * 60L - displayedUsedSeconds)
-            startActivity(TimeNoticeActivity.createIntent(this, AppPreferencesRepository.YOUTUBE_PACKAGE, remainingSeconds, limitMinutes))
-            return
         }
     }
 
@@ -251,16 +245,17 @@ class FocusAccessibilityService : AccessibilityService() {
         }
         suspensionManager.setStrategy(strategy)
 
-        // Extremely Distracting Apps are always timed, never explicitly blocked. They only join the
-        // suspended set when their daily timer has expired.
-        val explicitlyBlocked = (prefs.blockedPackages + ALWAYS_BLOCKED_PACKAGES)
-            .filterNot { EXTREMELY_DISTRACTING_PACKAGES.contains(it) }
-            .toSet()
+        val explicitlyBlocked = prefs.blockedPackages + ALWAYS_BLOCKED_PACKAGES
         val expired = prefs.appUsageSeconds.keys
             .filter { prefs.isTimerExpired(it) }
             .toSet()
+        val nightBlocked = if (prefs.nightBlockEdApps) {
+            prefs.allExtremelyDistractingPackages().filter { prefs.isEdNightBlocked(it) }.toSet()
+        } else {
+            emptySet()
+        }
         val desiredSuspended = if (prefs.blockingStrategy == BlockingStrategy.DEVICE_OWNER) {
-            explicitlyBlocked + expired
+            explicitlyBlocked + expired + nightBlocked
         } else {
             emptySet()
         }

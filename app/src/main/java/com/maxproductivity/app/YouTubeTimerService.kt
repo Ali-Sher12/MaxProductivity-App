@@ -9,10 +9,14 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.maxproductivity.app.data.AppPreferences
 import com.maxproductivity.app.data.AppPreferencesRepository
-import com.maxproductivity.app.data.EXTREMELY_DISTRACTING_PACKAGES
+import com.maxproductivity.app.data.ED_NIGHT_BLOCK_MESSAGE
+import com.maxproductivity.app.data.dueTimerReminderMilestone
+import com.maxproductivity.app.data.reminderMilestoneKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,6 +37,12 @@ class YouTubeTimerService : Service() {
     private var preferences: AppPreferences = AppPreferences()
 
     private val localAppUsage = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val shownReminderMilestones = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+    @Volatile private var trackedPackage: String? = null
+    @Volatile private var trackedStartedAtElapsed: Long = 0L
+    @Volatile private var trackedBaseUsage: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -47,6 +57,7 @@ class YouTubeTimerService : Service() {
 
                 if (prefs.appUsageDate != today) {
                     localAppUsage.clear()
+                    shownReminderMilestones.clear()
                 } else {
                     prefs.appUsageSeconds.forEach { (pkg, secs) ->
                         val localSecs = localAppUsage[pkg]
@@ -103,32 +114,69 @@ class YouTubeTimerService : Service() {
 
                 if (preferences.appUsageDate != today) {
                     localAppUsage.clear()
+                    shownReminderMilestones.clear()
+                    resetTracking()
                     YouTubeTrackingState.isYouTubeLimitReached = false
                     repository.resetDailyUsageIfNeeded(today)
                     continue
                 }
 
-                if (!FocusAccessibilityService.isRunning()) continue
+                if (!FocusAccessibilityService.isRunning()) {
+                    resetTracking()
+                    continue
+                }
+
+                // Never count time while the screen is off or the device is asleep.
+                val powerManager = getSystemService(PowerManager::class.java)
+                if (powerManager?.isInteractive != true) {
+                    resetTracking()
+                    continue
+                }
 
                 val state = YouTubeTrackingState.snapshot()
                 if (state.isNoticeActive || state.isBlockOverlayActive) {
                     // LongTerm's pop-up is open; do not deduct time from the app underneath.
+                    resetTracking()
                     continue
                 }
 
-                val fgPackage = state.foregroundPackage ?: continue
-                if (fgPackage == packageName) continue
+                val fgPackage = state.foregroundPackage
+                if (fgPackage == null || fgPackage == packageName) {
+                    resetTracking()
+                    continue
+                }
+
+                if (preferences.isEdNightBlocked(fgPackage)) {
+                    resetTracking()
+                    startActivity(
+                        BlockOverlayActivity.createIntent(
+                            this@YouTubeTimerService,
+                            ED_NIGHT_BLOCK_MESSAGE,
+                            fgPackage,
+                            preferences.backgroundImageUri,
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    continue
+                }
 
                 // Explicitly blocked apps are handled by the accessibility service.
-                if (preferences.blockedPackages.contains(fgPackage)) continue
+                if (preferences.blockedPackages.contains(fgPackage)) {
+                    resetTracking()
+                    continue
+                }
 
-                val limitSeconds = preferences.getEffectiveLimitSeconds(fgPackage) ?: continue
+                val limitSeconds = preferences.getEffectiveLimitSeconds(fgPackage)
+                if (limitSeconds == null) {
+                    resetTracking()
+                    continue
+                }
+
                 val currentUsage = localAppUsage[fgPackage] ?: preferences.getUsageSeconds(fgPackage)
-
                 if (currentUsage >= limitSeconds) {
                     if (fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE) {
                         YouTubeTrackingState.isYouTubeLimitReached = true
                     }
+                    resetTracking()
                     continue
                 }
 
@@ -138,22 +186,35 @@ class YouTubeTimerService : Service() {
                     fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE &&
                     (state.isShortsActive || state.isYouTubeLimitReached)
                 ) {
+                    resetTracking()
                     continue
                 }
 
-                val newUsage = currentUsage + 1
-                localAppUsage[fgPackage] = newUsage
-                repository.updateAppUsage(fgPackage, newUsage, today)
+                val previousUsage = currentUsage
+                val nowElapsed = SystemClock.elapsedRealtime()
+                if (trackedPackage != fgPackage) {
+                    trackedPackage = fgPackage
+                    trackedStartedAtElapsed = nowElapsed
+                    trackedBaseUsage = currentUsage
+                }
+
+                val elapsedSeconds = ((nowElapsed - trackedStartedAtElapsed) / 1000L).coerceAtLeast(0L)
+                val newUsage = trackedBaseUsage + elapsedSeconds
+                if (newUsage != currentUsage) {
+                    localAppUsage[fgPackage] = newUsage
+                    repository.updateAppUsage(fgPackage, newUsage, today)
+                }
 
                 if (newUsage >= limitSeconds) {
                     if (fgPackage == AppPreferencesRepository.YOUTUBE_PACKAGE) {
                         YouTubeTrackingState.isYouTubeLimitReached = true
                     }
-                    val blockMessage = if (EXTREMELY_DISTRACTING_PACKAGES.contains(fgPackage)) {
+                    val blockMessage = if (preferences.isExtremelyDistracting(fgPackage)) {
                         preferences.extremelyDistractingLimitMessage
                     } else {
                         preferences.timerLimitMessage
                     }
+                    resetTracking()
                     startActivity(
                         BlockOverlayActivity.createIntent(
                             this@YouTubeTimerService,
@@ -162,9 +223,39 @@ class YouTubeTimerService : Service() {
                             preferences.backgroundImageUri,
                         ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     )
+                    continue
+                }
+
+                // Remind only when the timer starts, when 5 minutes remain (limit >= 10m),
+                // and when 1 minute remains (limit >= 5m).
+                val limitMinutes = (limitSeconds / 60L).toInt()
+                val milestone = dueTimerReminderMilestone(limitMinutes, previousUsage, newUsage)
+                if (milestone != null) {
+                    val milestoneKey = reminderMilestoneKey(fgPackage, today, milestone)
+                    val alreadyShown = preferences.hasShownReminder(fgPackage, milestone, today)
+                    if (!alreadyShown && shownReminderMilestones.add(milestoneKey)) {
+                        repository.markReminderMilestoneShown(fgPackage, milestone, today)
+                        val remainingSeconds = maxOf(1L, limitSeconds - newUsage)
+                        resetTracking()
+                        startActivity(
+                            TimeNoticeActivity.createIntent(
+                                this@YouTubeTimerService,
+                                fgPackage,
+                                remainingSeconds,
+                                limitMinutes,
+                            ),
+                        )
+                        continue
+                    }
                 }
             }
         }
+    }
+
+    private fun resetTracking() {
+        trackedPackage = null
+        trackedStartedAtElapsed = 0L
+        trackedBaseUsage = 0L
     }
 
     private fun sendUserHome() {
